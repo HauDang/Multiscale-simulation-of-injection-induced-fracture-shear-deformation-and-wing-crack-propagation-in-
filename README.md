@@ -1,4 +1,4 @@
 # PorePy_ReMeshing
 
-Refinement and remeshing at tips
-Splitting a face to create a new fracture
+1. Refinement and remeshing at tips
+2. Splitting a face to create a new fracture

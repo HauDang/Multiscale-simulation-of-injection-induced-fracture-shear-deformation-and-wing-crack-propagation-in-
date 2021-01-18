@@ -5,4 +5,4 @@ Numerical solution for coupling fluid flow and fracture propagation in porous me
 2. Refinement and remeshing at tips
 3. Splitting a face to create a new fracture
 4. Running nonlinear, time-dependent on model
-5. Mapping solution between different grid
+5. Mapping solution between different grids

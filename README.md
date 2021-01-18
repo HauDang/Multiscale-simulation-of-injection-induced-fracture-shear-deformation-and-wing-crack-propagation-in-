@@ -1,4 +1,4 @@
-# Fracture contact mechanics and propagation in poroelastic media (developing)
+# Fracture propagation (FP) accounting for contact mechanics (CM) in poroelastic media (PM) (developing)
 Numerical solution for coupling fluid flow and fracture propagation in porous media due to fluid injection
 
 1. Using a finite volume - finite element framework

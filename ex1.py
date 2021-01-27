@@ -24,10 +24,6 @@ def trisurf(p, t, face = None, index = None, value = None):
             value = value.reshape(len(value),1)
         name_color_map = 'jet'
         x = p[:,0]
-        # y = p[:,1]
-        # z = value[:,0]
-        # plt.tricontourf(x,y,t,z,1000,cmap = name_color_map)
-        # plt.colorbar()
         if t.shape[1] == 3:
             x = p[:,0]
             y = p[:,1]
@@ -65,7 +61,7 @@ def fracture_infor(fracture):
         tipsi, edgei = tip_edge_fracture(fracture[i])
         tips = np.concatenate((tips, tipsi), axis = 0)
         frac_edges = np.concatenate((frac_edges,edgei + cou), axis = 0)
-        cou = np.max(edgei)+1
+        cou = np.max(frac_edges)+1
         
     tips = np.delete(tips, 0, 0)
     frac_edges = np.delete(frac_edges, 0, 0)     
@@ -115,20 +111,16 @@ class ModelSetup(model.ContactMechanicsBiot):
         self.length_scale = 1 #100
         self.scalar_source_value = 1
 
-        # Time 
-        self.time = pp.YEAR # seconds
-        self.time_step = self.time/2 #1500 * pp.DAY # obs scales with length scale
-        self.end_time = self.time_step * 10
-        self.step = 0
+        # Time seconds
+        self.time = 0 
+        self.time_step = pp.YEAR/12
+        self.end_time = self.time_step * 4
+        self.time_index = 0
 
         # solution 
         self.disp = []
         self.pres = []
         self.traction = []
-    def before_newton_loop(self):
-        self.convergence_status = False
-        self._iteration = 0
-        self._set_parameters()
     def prepare_simulation(self):        
         self.create_grid()
         self.set_rock_and_fluid()
@@ -149,18 +141,10 @@ class ModelSetup(model.ContactMechanicsBiot):
         self.rock = pp.Granite()
         self.rock.FRICTION_COEFFICIENT = 0.5
         self.rock.PERMEABILITY = 1e-16
-
-    def biot_alpha(self):
-        return 1
-    
+    def _biot_alpha(self, g: pp.Grid) -> float:
+        return 0.5
     def create_grid(self):
-        """ Define a fracture network and domain and create a GridBucket. 
-        
-        This setup has two fractures inside the unit cell.
-        
-        The method also calls a submethod which sets injection points in 
-        one of the fractures.
-        
+        """ Define a fracture network and domain and create a GridBucket.
         """
         # Domain definition
         network = pp.FractureNetwork2d(self.frac_pts.T, self.frac_edges.T, domain=self.box)
@@ -211,8 +195,8 @@ class ModelSetup(model.ContactMechanicsBiot):
 
         values[0, south] = 0
         values[1, south] = 0
-        values[0, north] = 0
-        values[1, north] = -1e6*np.sin(self.step*0.5)
+        values[0, north] = 0.005*np.sin(self.time_index)
+        values[1, north] = 0.002
         return values.ravel("F")
     def _bc_values_scalar(self, g):
         all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
@@ -220,12 +204,15 @@ class ModelSetup(model.ContactMechanicsBiot):
         # bc_values[east] = 0
         # bc_values[west] = 0
         return bc_values
+    def _friction_coefficient(self):
+        pass
+        return
+
     def after_newton_convergence(self, solution, errors, iteration_counter):
-        self.step = self.step+1
         self.assembler.distribute_variable(solution)
         self.convergence_status = True
         dispi, presi, tractioni = self.export_results()
-        self.disp.append(dispi)
+        self.disp.append(dispi.reshape((self.t.shape[0],2), order='f'))
         self.pres.append(presi)
         self.traction.append(tractioni)
         return
@@ -236,6 +223,7 @@ class ModelSetup(model.ContactMechanicsBiot):
         These are written to file and plotted against time in Figure 4.
         """     
         g = self.gb.grids_of_dimension(2)[0]
+        
         data = self.gb.node_props(g)
         disp = data[pp.STATE]["u"]
         pres = data[pp.STATE]["p"]
@@ -248,9 +236,19 @@ class ModelSetup(model.ContactMechanicsBiot):
     
         
 mesh_size = 0.05
-box = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}
-fracture1 = np.array([[0.4, 0.5], [0.6, 0.5]])
-fracture = np.array([fracture1])
+# box = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}
+# fracture1 = np.array([[0.4, 0.5], [0.6, 0.5]])
+# fracture = np.array([fracture1])
+
+fracture1 = np.array([[0.2, 0.7], [0.5, 0.7], [0.8, 0.65]])
+fracture2 = np.array([[1, 0.3], [1.8,0.4]])
+fracture3 = np.array([[0.2, 0.3], [0.6, 0.25]])
+fracture4 = np.array([[1.0, 0.4], [1.7, 0.85]])
+fracture5 = np.array([[1.5, 0.65], [2.0, 0.55]])
+fracture6 = np.array([[1.5, 0.05], [1.4, 0.25]])
+fracture = np.array([fracture1, fracture2, fracture3, fracture4, fracture5, fracture6])
+box = {'xmin': 0, 'ymin': 0, 'xmax': 2, 'ymax': 1}
+
 
 mesh_args = { "mesh_size_frac": mesh_size, 
               "mesh_size_min": 1 * mesh_size, 
@@ -263,11 +261,14 @@ params = {
 setup = ModelSetup(box, fracture, mesh_args, params)
 
 pp.run_time_dependent_model(setup, params)
-
-for i in range(7):
+setup.time_index
+for i in range(3):
     dispi = setup.disp[i]
     presi = setup.pres[i]
+    dispnod =  NN_recovery( dispi, setup.p, setup.t)
     presnod =  NN_recovery( presi, setup.p, setup.t)
     
-    trisurf(setup.p, setup.t, face = None, index = None, value = presnod)
+    trisurf(setup.p+dispnod*0.001, setup.t, face = None, index = None, value = presnod)
+
+trisurf(setup.p, setup.t, face = None, index = None, value = None)
 

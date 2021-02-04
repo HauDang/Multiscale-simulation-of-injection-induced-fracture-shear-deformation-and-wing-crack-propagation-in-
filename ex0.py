@@ -167,8 +167,109 @@ class ModelSetup(model.ContactMechanicsBiot):
         self.rock.LAMBDA = E * nuy / ((1 + nuy) * (1 - 2 * nuy))
         self.rock.MU = E / (2 * (1 + nuy))
         self.rock.PERMEABILITY = 2e-13
+        self.rock.VISCOSITY = 1.3e-4
+        self.rock.DENSITY = 2000
     def _biot_alpha(self, g: pp.Grid) -> float:
         return 0.79
+    def _set_mechanics_parameters(self) -> None:
+        """
+        Set the parameters for the simulation.
+        """
+        gb = self.gb
+        for g, d in gb:
+            if g.dim == self._Nd:
+                # Rock parameters
+                lam = self.rock.LAMBDA * np.ones(g.num_cells) / self.scalar_scale
+                mu = self.rock.MU * np.ones(g.num_cells) / self.scalar_scale
+                C = pp.FourthOrderTensor(mu, lam)
+
+                # Define boundary condition
+                bc = self._bc_type_mechanics(g)
+                # BC and source values
+                bc_val = self._bc_values_mechanics(g)
+                source_val = self._source_mechanics(g)
+
+                pp.initialize_data(
+                    g,
+                    d,
+                    self.mechanics_parameter_key,
+                    {
+                        "bc": bc,
+                        "bc_values": bc_val,
+                        "source": source_val,
+                        "fourth_order_tensor": C,
+                        "time_step": self.time_step,
+                        "biot_alpha": self._biot_alpha(g),
+                    },
+                )
+
+            elif g.dim == self._Nd - 1:
+                friction = self._set_friction_coefficient(g)
+                pp.initialize_data(
+                    g,
+                    d,
+                    self.mechanics_parameter_key,
+                    {"friction_coefficient": friction, "time_step": self.time_step},
+                )
+
+        for _, d in gb.edges():
+            mg: pp.MortarGrid = d["mortar_grid"]
+            pp.initialize_data(mg, d, self.mechanics_parameter_key)
+
+    def _set_scalar_parameters(self) -> None:
+        tensor_scale = self.scalar_scale / self.length_scale ** 2
+        kappa = 1 * tensor_scale
+        mass_weight = 1 * self.scalar_scale
+        for g, d in self.gb:
+            bc = self._bc_type_scalar(g)
+            bc_values = self._bc_values_scalar(g)
+            source_values = self._source_scalar(g)
+
+            specific_volume = self._specific_volume(g)
+            diffusivity = pp.SecondOrderTensor(
+                kappa * specific_volume * np.ones(g.num_cells)
+            )
+
+            alpha = self._biot_alpha(g)
+            pp.initialize_data(
+                g,
+                d,
+                self.scalar_parameter_key,
+                {
+                    "bc": bc,
+                    "bc_values": bc_values,
+                    "mass_weight": mass_weight * specific_volume,
+                    "biot_alpha": alpha,
+                    "source": source_values,
+                    "second_order_tensor": diffusivity,
+                    "time_step": self.time_step,
+                },
+            )
+
+        # Assign diffusivity in the normal direction of the fractures.
+        for e, data_edge in self.gb.edges():
+            g_l, g_h = self.gb.nodes_of_edge(e)
+            mg = data_edge["mortar_grid"]
+            a_l = self._aperture(g_l)
+            # Take trace of and then project specific volumes from g_h
+            v_h = (
+                mg.primary_to_mortar_avg()
+                * np.abs(g_h.cell_faces)
+                * self._specific_volume(g_h)
+            )
+            # Division by a/2 may be thought of as taking the gradient in the normal
+            # direction of the fracture.
+            normal_diffusivity = kappa * 2 / (mg.secondary_to_mortar_avg() * a_l)
+            # The interface flux is to match fluxes across faces of g_h,
+            # and therefore need to be weighted by the corresponding
+            # specific volumes
+            normal_diffusivity *= v_h
+            data_edge = pp.initialize_data(
+                e,
+                data_edge,
+                self.scalar_parameter_key,
+                {"normal_diffusivity": normal_diffusivity},
+            )
     def create_grid(self):
         """ Define a fracture network and domain and create a GridBucket.
         """
@@ -192,11 +293,11 @@ class ModelSetup(model.ContactMechanicsBiot):
         bc = pp.BoundaryConditionVectorial(g)
         
         bc.is_neu[:, north] = True
-        bc.is_dir[1, south] = True; bc.is_neu[0, south] = True
+        bc.is_dir[1, south] = True; #bc.is_neu[0, south] = True
         
-        bc.is_dir[0, east] = True; bc.is_neu[1, east] = True
+        bc.is_dir[0, east] = True; #bc.is_neu[1, east] = True
         
-        bc.is_dir[0, west] = True; bc.is_neu[1, west] = True
+        bc.is_dir[0, west] = True; #bc.is_neu[1, west] = True
         
         return bc
     def _bc_values_mechanics(self, g):
@@ -277,20 +378,4 @@ while setup.time < setup.end_time:
 
 
 trisurf(setup.p + dispnod*1, setup.t, infor = None, value = presnod[:,0],  vector = None, point = None, show = 1)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
      

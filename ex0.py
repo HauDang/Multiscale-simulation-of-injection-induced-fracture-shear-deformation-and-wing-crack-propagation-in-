@@ -137,7 +137,7 @@ class ModelSetup(model.ContactMechanicsBiot):
 
         # Time seconds
         self.time = 0 
-        self.end_time = 10 #1*24*60*60
+        self.end_time = 1 #1*24*60*60
         self.num_step = 3
         self.time_step = self.end_time/self.num_step       
 
@@ -168,7 +168,6 @@ class ModelSetup(model.ContactMechanicsBiot):
         self.rock.MU = E / (2 * (1 + nuy))
         self.rock.PERMEABILITY = 2e-13
         self.rock.VISCOSITY = 1.3e-4
-        self.rock.DENSITY = 2000
     def _biot_alpha(self, g: pp.Grid) -> float:
         return 0.79
     def _set_mechanics_parameters(self) -> None:
@@ -217,19 +216,17 @@ class ModelSetup(model.ContactMechanicsBiot):
             pp.initialize_data(mg, d, self.mechanics_parameter_key)
 
     def _set_scalar_parameters(self) -> None:
-        tensor_scale = self.scalar_scale / self.length_scale ** 2
-        kappa = 1 * tensor_scale
-        mass_weight = 1 * self.scalar_scale
+        kappa = self.rock.PERMEABILITY/self.rock.VISCOSITY
         for g, d in self.gb:
+            mass_weight = (1/1.23e10)*np.ones(g.num_cells) #g.cell_volumes
             bc = self._bc_type_scalar(g)
             bc_values = self._bc_values_scalar(g)
             source_values = self._source_scalar(g)
 
             specific_volume = self._specific_volume(g)
-            diffusivity = pp.SecondOrderTensor(
-                kappa * specific_volume * np.ones(g.num_cells)
-            )
-
+            
+            diffusivity = pp.SecondOrderTensor( kxx = kappa*specific_volume*np.ones(g.num_cells),
+                                                kyy = kappa*specific_volume*np.ones(g.num_cells))
             alpha = self._biot_alpha(g)
             pp.initialize_data(
                 g,
@@ -270,6 +267,15 @@ class ModelSetup(model.ContactMechanicsBiot):
                 self.scalar_parameter_key,
                 {"normal_diffusivity": normal_diffusivity},
             )
+    def _source_mechanics(self, g):
+        Fm = np.zeros(g.num_cells * self._Nd) 
+        Fm[1::2] = 2000*9.8*g.cell_volumes
+        return Fm
+
+    def _source_scalar(self, g):
+        values = np.zeros(g.num_cells)
+        return values
+
     def create_grid(self):
         """ Define a fracture network and domain and create a GridBucket.
         """
@@ -293,18 +299,16 @@ class ModelSetup(model.ContactMechanicsBiot):
         bc = pp.BoundaryConditionVectorial(g)
         
         bc.is_neu[:, north] = True
-        bc.is_dir[1, south] = True; #bc.is_neu[0, south] = True
-        
-        bc.is_dir[0, east] = True; #bc.is_neu[1, east] = True
-        
-        bc.is_dir[0, west] = True; #bc.is_neu[1, west] = True
+        bc.is_dir[1, south] = True;
+        bc.is_dir[0, east] = True; 
+        bc.is_dir[0, west] = True;
         
         return bc
     def _bc_values_mechanics(self, g):
         # Set the boundary values
         all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
         values = np.zeros((g.dim, g.num_faces))
-        values[1, north] = -4e6
+        values[1, north] = -4e6*g.face_areas[north]
         return values.ravel("F")
     def _bc_type_scalar(self, g):
         all_bf, east, west, north, south, top, bottom = self._domain_boundary_sides(g)
@@ -342,7 +346,7 @@ class ModelSetup(model.ContactMechanicsBiot):
         return disp, pres, traction
     
         
-mesh_size = 0.01
+mesh_size = 0.02
 mesh_args = { "mesh_size_frac": mesh_size, "mesh_size_min": 1 * mesh_size, "mesh_size_bound": 5 * mesh_size } 
 params = {"folder_name": "biot_2","convergence_tol": 2e-7,"max_iterations": 20,"file_name": "main_run",}
 
@@ -378,4 +382,4 @@ while setup.time < setup.end_time:
 
 
 trisurf(setup.p + dispnod*1, setup.t, infor = None, value = presnod[:,0],  vector = None, point = None, show = 1)
-     
+

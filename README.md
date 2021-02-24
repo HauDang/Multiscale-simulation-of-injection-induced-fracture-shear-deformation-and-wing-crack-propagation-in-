@@ -6,3 +6,6 @@ Numerical solution for coupling fluid flow and fracture propagation in porous me
 3. Splitting a face to create a new fracture
 4. Running nonlinear, time-dependent on model
 5. Mapping solution between different grids
+
+To run the examples contained in this repository a working version of PorePy must be installed on the computer.
+The PorePy install requires installations of further packages, see Install instructions in the PorePy repository.

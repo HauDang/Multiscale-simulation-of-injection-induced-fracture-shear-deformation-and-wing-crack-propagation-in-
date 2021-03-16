@@ -1,4 +1,4 @@
-# Fracture propagation (FP) accounting for contact mechanics (CM) in poroelastic media (PM) (developing)
+# Fracture propagation (FP) accounting for contact mechanics (CM) in porous media (PM) (developing)
 Numerical solution for coupling fluid flow and fracture propagation in porous media due to fluid injection
 
 1. Using a finite volume - finite element framework
@@ -7,5 +7,5 @@ Numerical solution for coupling fluid flow and fracture propagation in porous me
 4. Running nonlinear, time-dependent on model
 5. Mapping solution between different grids
 
-To run the examples contained in this repository a working version of PorePy must be installed on the computer.
+To run the examples contained in this repository a working version of PorePy (Version 1.3.0) must be installed on the computer.
 The PorePy install requires installations of further packages, see Install instructions in the PorePy repository.

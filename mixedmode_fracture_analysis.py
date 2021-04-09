@@ -458,7 +458,11 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
             tt = t[:,[0, 2, 4]]
             plt.tricontourf(x,y,tt,z,500,cmap = name_color_map)
             plt.colorbar()
-
+        # plt.colorbar('Pressure')
+    plt.xlabel('m', fontsize=18)
+    plt.ylabel('m', fontsize=18)
+    plt.rcParams['xtick.labelsize']=18
+    plt.rcParams['ytick.labelsize']=18
     plt.show()    
 
 ''' ############################ 
@@ -570,7 +574,6 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     # fractures informations
     g2d = gb.grids_of_dimension(2)[0]
     g1d = gb.grids_of_dimension(1)
-    
     
     import collections
     global_fracture_nodes = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count > 1])
@@ -802,8 +805,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     g2d.num_faces = num_faces_aft
     g2d.num_nodes = num_nodes_aft
     
-    global_fracture_nodes = np.array([item for item, count in 
-                                      collections.Counter(g2d.global_point_ind).items() if count > 1])
+    # global_fracture_nodes = np.array([item for item, count in 
+    #                                   collections.Counter(g2d.global_point_ind).items() if count > 1])
     global_point_ind_bef = g2d.global_point_ind
     global_point_ind_aft = np.zeros(num_nodes_aft, dtype = np.int32)
     for i in range(pair_contact_aft.shape[0]):
@@ -816,7 +819,16 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
             global_point_ind_aft[i] = count
             count = count + 1
             
+    for i, g1di in enumerate(g1d): 
+        nodes1d = g1di.nodes[[0,1],:].T
+        index = np.array([], dtype = np.int32)
+        for j in range(nodes1d.shape[0]):
+            indexj = np.where(np.sqrt( (p_aft[:,0] - nodes1d[j,0])**2 + (p_aft[:,1] - nodes1d[j,1])**2 )  < 
+                             gap + np.finfo(float).eps*1E8)[0][0]
+            index = np.append(index,indexj)
         
+        index_global = global_point_ind_aft[index]
+        g1di.global_point_ind = index_global
     
     g2d.global_point_ind = global_point_ind_aft
     g2d.parent_cell_ind = np.arange(num_cells_aft, dtype = np.int32)
@@ -914,9 +926,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     g2d.compute_geometry()
     return tip_prop, new_tip, split_face
 
-def mapping_solution(gb, p, t, tips0, disp_cells, pres_cells, gap):
+def mapping_solution(g2d, p, t, tips0, disp_cells, pres_cells, gap):
     import porepy as pp
-    g2d = gb.grids_of_dimension(2)[0]
     p2, t2 = adjustmesh(g2d, tips0, gap)
     mapping = np.asarray(pp.intersections.triangulations(p2.T, p.T, t2.T, t.T) )
     pres2 = np.zeros( shape = (t2.shape[0]))
@@ -927,9 +938,6 @@ def mapping_solution(gb, p, t, tips0, disp_cells, pres_cells, gap):
         disp2[e,:] = np.array( [sum(disp_cells[concel,0]*mapping[ind,2])/sum(mapping[ind,2]), 
                                 sum(disp_cells[concel,1]*mapping[ind,2])/sum(mapping[ind,2]) ])
         pres2[e] = sum(pres_cells[concel]*mapping[ind,2])/sum(mapping[ind,2])
-    
-    gb.node_props(g2d)[pp.STATE]["u"] = disp2.reshape((g2d.num_cells*2,1))[:,0]
-    gb.node_props(g2d)[pp.STATE]["p"] = pres2
     return disp2, pres2 
 def do_remesh(p, t, lmin, fracture, gap, newfrac = None):
     ''' 1. Refinement at new tips or new fracture
@@ -1025,7 +1033,7 @@ def rosette_element(p, t, fracture, tip, r, gap ):
     r2 = np.sqrt( np.sum( (P1 - tip)**2 ) )
     alpha = [i*(2*np.pi - angle0)/n + angle0/2 for i in range(n+1)] 
     alpha = np.delete(alpha,[1,n-1])
-    r0 = alpha*0 + r*1.6; r_control = r2*1.2; r0[0] = r_control; r0[-1] = r_control # This based on experiments
+    r0 = alpha*0 + r*1.5; r_control = r2*1.2; r0[0] = r_control; r0[-1] = r_control # This based on experiments
     xin = -r0*np.cos(alpha + thetha) + tip[0]
     yin = -r0*np.sin(alpha + thetha) + tip[1]
     pv = np.concatenate((xin.reshape(len(xin),1), yin.reshape(len(xin),1)), axis=1)
@@ -1459,7 +1467,9 @@ def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture,
     Gi, ki, keq, craang = SIF(p6, t6, disp, material['YOUNG'],  material['POISSON'], qpe )
     ladv = np.zeros(tips.shape[0])
     # ladv[:] =  max_pro
-    pos_pro = np.where(abs(keq) >= material['KIC'])[0]
+    pos_pro = []
+    if np.max(np.abs(keq)) >= material['KIC']:
+        pos_pro = np.where(np.abs(keq)*1.1 >= material['KIC'])[0]
     
     if len(pos_pro) > 0:
         ladv[pos_pro] = max_pro*( Gi[pos_pro]/np.max(Gi[pos_pro]) )**0.35

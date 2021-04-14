@@ -2,6 +2,7 @@ import numpy as np
 import numpy.matlib
 import scipy.sparse as sps
 from scipy import linalg
+from matplotlib.collections import PolyCollection
 
 ''' ############################ 
 
@@ -407,6 +408,7 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
     '''
     
     import matplotlib.pyplot as plt
+    import matplotlib.collections
     fig, grid = plt.subplots()
     if t.shape[1] == 3:
         X = [p[t[:,0],0], p[t[:,1],0], p[t[:,2],0], p[t[:,0],0]]
@@ -440,29 +442,48 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
         grid.plot(point[:,0], point[:,1],'r.')
     
     if value is not None:
-        if len(value.shape) == 1:
-            value = value.reshape(len(value),1)
-        name_color_map = 'jet'
-        if t.shape[1] == 3:
-            x = p[:,0]
-            y = p[:,1]
-            z = value[:,0]
-            plt.tricontourf(x,y,t,z,1000,cmap = name_color_map)
-            plt.colorbar()
- 
-        if t.shape[1] == 6:
-            snode = np.max(t[:,[0, 2, 4]]) + 1
-            x = p[0:snode,0]
-            y = p[0:snode,1]
-            z = value[0:snode,0]
-            tt = t[:,[0, 2, 4]]
-            plt.tricontourf(x,y,tt,z,500,cmap = name_color_map)
-            plt.colorbar()
-        # plt.colorbar('Pressure')
+        if len(value) == t.shape[0]:
+            def showMeshPlot(nodes, elements, values, fig, grid):
+                y = p[:,0]
+                z = p[:,1]
+                def quatplot(y,z, quatrangles, values, ax=None, **kwargs):
+            
+                    if not ax: ax=plt.gca()
+                    yz = np.c_[y,z]
+                    verts= yz[quatrangles]
+                    pc = matplotlib.collections.PolyCollection(verts, **kwargs)
+                    pc.set_array(values)
+                    ax.add_collection(pc)
+                    ax.autoscale()
+                    return pc
+            
+                pc = quatplot(y,z, np.asarray(elements), values, ax = grid, 
+                         edgecolor="k", cmap="jet")
+                fig.colorbar(pc, ax = grid)        
+                grid.plot(y,z, marker="", ls="", color="crimson")
+            showMeshPlot(p, t, value, fig, grid)    
+        if len(value) == p.shape[0]:
+            if t.shape[1] == 3:
+                x = p[:,0]
+                y = p[:,1]
+                z = value[:,0]
+                plt.tricontourf(x,y,t,z,1000,cmap = 'jet')
+                plt.colorbar()
+     
+            if t.shape[1] == 6:
+                snode = np.max(t[:,[0, 2, 4]]) + 1
+                x = p[0:snode,0]
+                y = p[0:snode,1]
+                z = value[0:snode,0]
+                tt = t[:,[0, 2, 4]]
+                plt.tricontourf(x,y,tt,z,500,cmap = 'jet')
+                plt.colorbar()
+
     plt.xlabel('m', fontsize=18)
     plt.ylabel('m', fontsize=18)
     plt.rcParams['xtick.labelsize']=18
     plt.rcParams['ytick.labelsize']=18
+    grid.set_aspect('equal')
     plt.show()    
 
 ''' ############################ 
@@ -864,8 +885,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
  
     data = gb.node_props(g2d)
     data['state']['mechanics']['bc_values'] = np.zeros(num_faces_aft*2)
-    data['state']['iterate']['aperture'] = np.ones(num_cells_aft*2)
-    data['state']['iterate']['specific_volume'] = np.ones(num_cells_aft*2)
+    data['state']['iterate']['aperture'] = np.ones(num_cells_aft)
+    data['state']['iterate']['specific_volume'] = np.ones(num_cells_aft)
     
     
     count = 0    

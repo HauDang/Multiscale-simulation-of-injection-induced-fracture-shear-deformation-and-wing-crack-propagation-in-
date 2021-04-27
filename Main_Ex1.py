@@ -1,3 +1,4 @@
+
 import numpy as np
 # np.seterr(divide='raise')
 import porepy as pp
@@ -14,7 +15,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.GAP = 5e-3
  
         self.tips, self.frac_pts, self.frac_edges = analysis.fracture_infor(self.fracture)
-        self.initial_aperture = 0.001
+        self.initial_aperture = 1e-4
         self.box = box
         self.mesh_args = mesh_args
         
@@ -25,8 +26,10 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
 
         # Time seconds
         self.time = 0 
-        self.end_time = 365*24*60*60
-        self.time_step = 24*60*60 # 1 day  
+        self.end_time = 30*24*60*60
+        self.time_step = 0.1*60*60   
+        self.time_step_fix = 0.1*60*60 
+                
         self.glotim = []
 
         # solution 
@@ -42,6 +45,11 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.farcoo = []
         # Propagation criterion
         self.pro_cri = False
+        
+        self.gloinj = []
+        self.lenfra = []
+        self.glokeq = []
+
     def prepare_simulation(self):        
         self.create_grid()
         self.set_rock_and_fluid()
@@ -51,6 +59,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.initial_condition()
         self.discretize()
         self.initialize_linear_solver()
+    
     def update_discretize(self):        
         self.set_parameters()
         self.assign_variables()
@@ -60,6 +69,59 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
     def before_newton_loop(self):
         self.convergence_status = False
         self._iteration = 0
+    def before_newton_iteration(self) -> None:
+        """Rediscretize non-linear terms.
+        QUESTION: Should the parent be updated?
+        """
+        # First update parameters, then discretize all terms except those treated
+        # by mpfa and mpsa in the highest dimension.
+        # NOTE: We may end up unnecessarily rediscretizing a few terms, but the cost
+        # of this is insignificant.
+        self._iteration += 1
+
+        ## First update parameters.
+        # The Darcy fluxes were updated right after the previous Newton iteration
+        # or in self.prepare_for_simulation(), thus no need to update these here.
+
+        # Update apertures and specific volumes (e.g. compute from displacement jumps).
+        # Store as iterate information.
+        self.update_all_apertures(to_iterate=True)
+
+        # Update parameters.
+        # Depending on the implementation of set_parameters, this can for instance
+        # update permeability as a function of aperture. Similarly, various other
+        # quantities can be updated.
+        self.set_parameters()
+
+        ###
+        # With updated parameters (including Darcy fluxes), we can now discretize
+        # non-linear terms.
+
+        # Discretize everything except terms relating to poro-elasticity and
+        # diffusion (that is, discretize everything not handled by mpfa or mpsa).
+        # NOTE: Accumulation terms in self.Nd could also have been excluded.
+        term_list = [
+            "!mpsa",
+            "!stabilization",
+            "!div_u",
+            "!grad_p",
+            "!diffusion",
+        ]
+        filt = pp.assembler_filters.ListFilter(term_list=term_list)
+        # NOTE: No grid filter here, in pratice, all terms on lower-dimensional grids
+        # (apart from diffusion) are discretized here, so is everything on the mortars
+        self.assembler.discretize(filt=filt)
+
+        # Discretize diffusion terms on lower-dimensional grids.
+        for dim in range(self.Nd):
+            grid_list = self.gb.grids_of_dimension(dim)
+            if len(grid_list) == 0:
+                continue
+            filt = pp.assembler_filters.ListFilter(
+                grid_list=grid_list,
+                term_list=["diffusion"],
+            )
+            self.assembler.discretize(filt=filt)
         
     def set_rock_and_fluid(self):
         """
@@ -74,11 +136,13 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.VISCOSITY = 1
         self.FRICTION = 0.5
         self.FLUID_DENSITY = 1E3
+        self.ROCK_DENSITY = 2.7E3*0
+        self.INJECTION = 1e-7
 
         self.BULK = self.YOUNG/3/(1 - 2*self.POISSON)
         self.LAMBDA = self.YOUNG*self.POISSON / ((1 + self.POISSON) * (1 - 2 * self.POISSON))
         self.MU = self.YOUNG/ (2 * (1 + self.POISSON))
-        self.material = dict([('YOUNG', self.YOUNG), ('POISSON', self.POISSON), ('KIC', 540000) ])      
+        self.material = dict([('YOUNG', self.YOUNG), ('POISSON', self.POISSON), ('KIC', 1e6*0) ])      
     def porosity(self, g) -> float:
         if g.dim == 2:
             return self.POROSITY
@@ -96,19 +160,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         if from_iterate:
             return self.gb.node_props(g)[pp.STATE][pp.ITERATE]["aperture"]
         else:
-            return self.gb.node_props(g)[pp.STATE]['iterate']['aperture']
-   
-    def _aperture(self, g: pp.Grid) -> np.ndarray:
-        """
-        Aperture is a characteristic thickness of a cell, with units [m].
-        1 in matrix, thickness of fractures and "side length" of cross-sectional
-        area/volume (or "specific volume") for intersections of co-dimension 2 and 3.
-        See also specific_volume.
-        """
-        aperture = np.ones(g.num_cells)
-        if g.dim < self._Nd:
-            aperture *= self.GAP
-        return aperture    
+            return self.gb.node_props(g)[pp.STATE]['iterate']['aperture']  
     def specific_volume(self, g, from_iterate=True) -> np.ndarray:
         """
         Obtain the specific volume of a subdomain. See update_all_apertures.
@@ -251,8 +303,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             V = self.specific_volume(g_l, True)
             # V_h = mg.primary_to_mortar_avg() * np.abs(g_h.cell_faces) * self.specific_volume(g_h)
             V_h = self.specific_volume(g_h, True)
-            # We assume isotropic permeability in the fracture, i.e. the normal
-            # permeability equals the tangential one
+            # We assume isotropic permeability in the fracture, i.e. the normal permeability equals the tangential one
             k_s = data_l[pp.PARAMETERS][key]["second_order_tensor"].values[0, 0]
             # Division through half the aperture represents taking the (normal) gradient
             kn = mg.secondary_to_mortar_int() * np.divide(k_s, a * V / 2)
@@ -262,14 +313,16 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             pp.initialize_data(mg, d, key, {"normal_diffusivity": kn})
     def _source_mechanics(self, g):
         Fm = np.zeros(g.num_cells * self._Nd) 
+        Fm[1::2] = -self.ROCK_DENSITY*g.cell_volumes
 
         return Fm
 
     def _source_scalar(self, g):
         values = np.zeros(g.num_cells)
-        if g.dim == 1:
-            inject = (g.cell_centers[0,:] <= 2.1) * (g.cell_centers[0,:] >= 1.9) * (g.cell_centers[1,:] <= 2.01) * (g.cell_centers[1,:] >= 1.99)
-            values[inject] = g.cell_volumes[inject]*0.001
+        if g.dim == 1: #and self.pro_cri == False:
+            print('injection')
+            inject = (g.cell_centers[0,:] <= 2.2) * (g.cell_centers[0,:] >= 1.8) * (g.cell_centers[1,:] <= 2.01) * (g.cell_centers[1,:] >= 1.99)
+            values[inject] = g.cell_volumes[inject]*self.INJECTION*self.time_step
         return values
 
     def create_grid(self):
@@ -287,6 +340,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.min_face = np.min(g2d.face_areas)
         self.min_cell = np.min(g2d.cell_volumes)
         self.p, self.t = analysis.adjustmesh(g2d, self.tips, self.GAP)
+        self.fa_no =  g2d.face_nodes.indices.reshape((2, g2d.num_faces), order='f').T 
         self.update_all_apertures()
         return gb
     def _bc_type_mechanics(self, g):
@@ -295,8 +349,8 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
         bc = pp.BoundaryConditionVectorial(g)
         
-        bc.is_neu[:, north] = True
-        # bc.is_dir[1, north] = True
+        # bc.is_neu[0, north] = True
+        bc.is_dir[:, north] = True
         bc.is_dir[:, south] = True
         
         # bc.is_dir[:, north] = True
@@ -310,7 +364,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         # Set the boundary values
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
         values = np.zeros((g.dim, g.num_faces))
-        values[1, north] = -2e6*g.face_areas[north]
+        # values[0, north] = -2e3*g.face_areas[north]
         # values[0, north] = 2e6*g.face_areas[north]
         return values.ravel("F")
     def _bc_type_scalar(self, g):
@@ -328,54 +382,53 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         if g.dim == 2:
             return np.empty(0, dtype=int)
         else: 
-            dir_scalar = (g.cell_centers[0,:] <= 2.1) * (g.cell_centers[0,:] >= 1.9) * (g.cell_centers[1,:] <= 2.01) * (g.cell_centers[1,:] >= 1.99)
+            dir_scalar = (g.cell_centers[0,:] <= 2.2) * (g.cell_centers[0,:] >= 1.8) * (g.cell_centers[1,:] <= 2.01) * (g.cell_centers[1,:] >= 1.99)
             return dir_scalar
     def after_newton_convergence(self, solution, errors, iteration_counter):
         """Propagate fractures if relevant. Update variables and parameters
         according to the newly calculated solution.
         
         """
+        self.pro_cri = False
         self.assembler.distribute_variable(solution)
         self.convergence_status = True
         self.save_mechanical_bc_values()
-        
-        # gb = self.gb
+
         g2d = self.gb.grids_of_dimension(2)[0]
         data = self.gb.node_props(g2d)
         # We export the converged solution *before* propagation:
         self.update_all_apertures(to_iterate=True)
         self.export_step()
-        # NOTE: Darcy fluxes were updated in self.after_newton_iteration().
-        # The fluxes are mapped to the new geometry (and fluxes are assigned for
-        # newly formed faces) by the below call to self._map_variables().
-
-        # Propagate fractures:
-        #   i) Identify which faces to open in g_h
-        #   ii) Split faces in g_h
-        #   iii) Update g_l and the mortar grid. Update projections.
-        # disp_cells = solution[:self.assembler.full_dof[0]].reshape((self.t.shape[0],2))
-        # pres_cells = solution[self.assembler.full_dof[0] : self.assembler.full_dof[0] + self.assembler.full_dof[1]]
         
         disp_cells = data[pp.STATE]["u"].reshape((self.t.shape[0],2))
         pres_cells = data[pp.STATE]["p"]
-   
-        disp_nodes =  analysis.NN_recovery( disp_cells, self.p, self.t)
-        pres_nodes =  analysis.NN_recovery( pres_cells, self.p, self.t)
+        
+        # Store data/results
+        self.stored_disp.append(disp_cells)
+        self.stored_pres.append(pres_cells)
+        self.nodcoo.append(self.p)
+        self.celind.append(self.t)
+        self.facind.append(g2d.face_nodes.indices.reshape((2, g2d.num_faces), order='f').T   )
+        self.farcoo.append(self.fracture)
+        
         
         tips, frac_pts, frac_edges = analysis.fracture_infor(self.fracture)
-
-        pmod, tmod = analysis.adjustmesh(g2d, tips, self.GAP) 
+        pmod, tmod = analysis.adjustmesh(g2d, tips, self.GAP)    
         
+            
         pref, tref = analysis.refinement( pmod, tmod, self.fracture, tips, self.min_cell, self.min_face, self.GAP)
         
         keq, newfrac, tips0, p6, t6, disp6 = analysis.evaluate_propagation(self.material, pref, tref, self.p, self.t, 
-                                                                      self.initial_fracture, self.fracture, tips, 
-                                                                      self.min_face, disp_nodes, self.GAP)
+                                                                        self.initial_fracture, self.fracture, tips, 
+                                                                        self.min_face, disp_cells, self.GAP)
+        self.glokeq.append(keq)
         print(keq)
         if len(newfrac) > 0:
+            self.pro_cri = True
             solution_1d = solution[self.assembler.full_dof[0] + self.assembler.full_dof[1]:]
+            pref, tref = analysis.refinement( pmod, tmod, self.fracture, tips, self.min_cell, self.min_face, self.GAP)
             tip_prop, new_tip, split_face_list = analysis.remesh_at_tip(self.gb, pref, tref, self.fracture, self.min_face, newfrac, self.GAP)   
-           
+            
             pp.contact_conditions.set_projections(self.gb)
             g2d = self.gb.grids_of_dimension(2)[0]
             disp1, pres1 = analysis.mapping_solution(g2d, self.p, self.t, tips0, disp_cells, pres_cells, self.GAP)
@@ -472,23 +525,18 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             self.p, self.t = analysis.adjustmesh(g2d, self.tips, self.GAP)
             g2d = self.gb.grids_of_dimension(2)[0]
             data = self.gb.node_props(g2d)
-            disp_cells = data[pp.STATE]["u"]
-            pres_cells = data[pp.STATE]["p"]
-            disp_nodes =  analysis.NN_recovery( disp_cells.reshape((self.t.shape[0],2)), self.p, self.t)
-            pres_nodes =  analysis.NN_recovery( pres_cells, self.p, self.t)
-            
-        self.disp.append(disp_nodes)
-        self.pres.append(pres_nodes)
+            # disp_cells = data[pp.STATE]["u"].reshape((self.t.shape[0],2))
+            # pres_cells = data[pp.STATE]["p"]            
         
-        self.stored_disp.append(disp_cells)
-        self.stored_pres.append(pres_cells)
-        
-        self.nodcoo.append(self.p)
-        self.celind.append(self.t)
-        self.facind.append(g2d.face_nodes.indices.reshape((2, g2d.num_faces), order='f').T   )
-        self.farcoo.append(self.fracture)
-        
+        if self.pro_cri:
+            self.lenfra.append(self.min_face)
+        else:
+            self.lenfra.append(0)
         self.glotim.append(self.time)
+        self.gloinj.append(self.INJECTION)
+        self.adjust_time_step()
+        
+        return
     def update_all_apertures(self, to_iterate=True):
         """
         To better control the aperture computation, it is done for the entire gb by a
@@ -651,31 +699,20 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
                 filt = pp.assembler_filters.ListFilter(grid_list=grid_list)
                 self.assembler.discretize(filt=filt)
                     
-    def export_results(self):
-        """
-        Save displacement jumps and number of iterations for visualisation purposes. 
-        These are written to file and plotted against time in Figure 4.
-        """     
-        g = self.gb.grids_of_dimension(2)[0]
-        self.p, self.t = analysis.adjustmesh(g, self.tips, self.GAP)
-        data = self.gb.node_props(g)
-        disp = data[pp.STATE]["u"]
-        pres = data[pp.STATE]["p"]
+    def adjust_time_step(self):
+        if self.pro_cri:
+            self.time_step = self.time_step_fix/2000
+        else:
+            self.time_step = self.time_step_fix
         
-        matrix_dictionary = data[pp.DISCRETIZATION_MATRICES][self.mechanics_parameter_key]
-        
-        traction = matrix_dictionary['stress'] * disp + matrix_dictionary["grad_p"] * pres
-
-        return disp, pres, traction
-    
-        
-mesh_size = 0.08
+mesh_size = 0.1
 mesh_args = { "mesh_size_frac": mesh_size, "mesh_size_min": 1 * mesh_size, "mesh_size_bound": 5 * mesh_size } 
 params = {"folder_name": "biot_2","convergence_tol": 2e-7,"max_iterations": 20,"file_name": "main_run",}
 
 
-box = {"xmin": 0, "ymin": 0, "xmax": 4, "ymax": 4}  
-fracture1 = np.array([[1.8, 2.0],[2.2, 2.0]])   
+box = {"xmin": 0, "ymin": 0, "xmax": 10, "ymax": 10}  
+fracture1 = np.array([[4.8, 5.0],[5.2, 5.0]])   
+# fracture2 = np.array([[2.3, 3.0],[2.5, 3.0]])   
 fracture = np.array([fracture1])
 
 tips, frac_pts, frac_edges = analysis.fracture_infor(fracture)
@@ -683,20 +720,30 @@ tips, frac_pts, frac_edges = analysis.fracture_infor(fracture)
 setup = ModelSetup(box, fracture, mesh_args, params)
 setup.prepare_simulation()
 solver = pp.NewtonSolver(params)
+
+p = setup.p
+# t = setup.t
+# face = setup.fa_no
+# analysis.trisurf(  p, t, fn = None, point = None, value = None, infor = 1)
+
+
+
 k = 0
 while setup.time < setup.end_time:
     setup.time += setup.time_step
     print('step = ', k, ': time = ', setup.time)
+    if k == 7:
+        stop = 1
     solver.solve(setup)
     k+= 1
     
-k = 36
-disp_nodes = setup.disp[k]
-pres_nodes = setup.pres[k]
+k = 13
 p = setup.nodcoo[k]
 t = setup.celind[k]
 face = setup.facind[k]
+disp_nodes =  analysis.NN_recovery( setup.stored_disp[k], p, t)
 # frac = np.concatenate((setup.farcoo[k][0], setup.farcoo[k][1]), axis = 0)
 frac = setup.farcoo[k][0]
-analysis.trisurf( p + disp_nodes*3e-1*0, t, fn = None, point = None, value = setup.stored_pres[k], infor = None)
-analysis.trisurf( p + disp_nodes*3e-1*0, t, fn = None, point = None, value = setup.stored_disp[k][1::2], infor = None)
+analysis.trisurf( p + disp_nodes*1e2, t, fn = None, point = None, value = setup.stored_pres[k], infor = None)
+
+# analysis.trisurf( p + disp_nodes*1e3, t, fn = None, point = None, value = setup.stored_disp[k][:,1], infor = None)

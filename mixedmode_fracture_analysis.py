@@ -4,12 +4,30 @@ import scipy.sparse as sps
 from scipy import linalg
 from matplotlib.collections import PolyCollection
 
+TOL = np.finfo(float).eps*1E5
+TOLGAP = 0.03 # TOL
 ''' ############################ 
 
     Some auxiliary functions 
     
 ################################'''
-
+def mapping_coordinate(pnew, pold):
+    # ---------- pold --------------
+    # .
+    # .
+    # .
+    # pnew      mapping
+    # .
+    # .
+    # .
+    # .
+    x0 = np.matlib.repmat(pnew[:,0].reshape(pnew.shape[0],1), 1, pold.shape[0])
+    y0 = np.matlib.repmat(pnew[:,1].reshape(pnew.shape[0],1), 1, pold.shape[0])
+    x1 = np.matlib.repmat(pold[:,0].reshape(1, pold.shape[0]), pnew.shape[0], 1)
+    y1 = np.matlib.repmat(pold[:,1].reshape(1, pold.shape[0]), pnew.shape[0], 1)
+    dis = np.sqrt( (x0 - x1)**2 + (y0 - y1)**2 )
+    mapping = np.where(dis <= np.finfo(float).eps)
+    return mapping
 def p2segment(p, pv):
     '''
     To find the distance of our point p  to the line segment between points A and B,
@@ -56,6 +74,90 @@ def p2segment(p, pv):
         d[:,i] = np.sqrt((p[:,0] - q[:,0])**2 + (p[:,1]- q[:,1])**2)
     ds[:,0] = d.min(1)
     return ds
+def intersectLines( pt1, pt2, segments ): 
+    """ this returns the intersection of Line(pt1,pt2) and segments(ptA,ptB)
+        
+        returns a array: intpoi = array([xi, yi], shape=(i, 2), dtype=float64)
+        
+        (xi, yi) is the intersection
+        
+        r is the scalar multiple such that (xi,yi) = pt1 + r*(pt2-pt1)
+        s is the scalar multiple such that (xi,yi) = pt1 + s*(ptB-ptA)
+        
+        for example
+ 
+        pt1 = np.array([-1, 1])
+        pt2 = np.array([5, 3])
+        segments = np.random.rand(1000, 2) * 4
+        
+        intpoi = intersectLines( pt1, pt2, segments )
+        
+        import matplotlib.pyplot as plt
+        fig, grid = plt.subplots()
+        grid.plot(segments[:,0], segments[:,1],'r-')
+        line = np.array([pt1, pt2])
+        grid.plot(line[:,0], line[:,1],'b-')
+        if len(intpoi) > 0:
+            for i in range(intpoi.shape[0]):
+                grid.plot(intpoi[:,0], intpoi[:,1],'b*')
+        
+        plt.show() """
+    # the first line is pt1 + r*(pt2-pt1)
+    # in component form:
+    x1, y1 = pt1;   x2, y2 = pt2
+    dx1 = x2 - x1;  dy1 = y2 - y1
+    lenlin = np.sqrt(dx1**2 + dy1**2)
+    dx1 = dx1/lenlin; dy1 = dy1/lenlin
+    
+    intpoi = np.array([[0.0, 0.0]])
+    # the second line is ptA + s*(ptB-ptA)
+    for i in range(segments.shape[0]-1):
+        ptA = segments[i, :]; ptB = segments[i + 1,:]
+
+        x, y = ptA;   xB, yB = ptB;
+        dx = xB - x;  dy = yB - y;
+        lenseg = np.sqrt(dx**2 + dy**2)
+        dx = dx/lenseg; dy = dy/lenseg
+
+        # we need to find the (typically unique) values of r and s
+        # that will satisfy
+        #
+        # (x1, y1) + r(dx1, dy1) = (x, y) + s(dx, dy)
+        #
+        # which is the same as
+        #
+        #    [ dx1  -dx ][ r ] = [ x-x1 ]
+        #    [ dy1  -dy ][ s ] = [ y-y1 ]
+        #
+        # whose solution is
+        #
+        #    [ r ] = _1_  [  -dy   dx ] [ x-x1 ]
+        #    [ s ] = DET  [ -dy1  dx1 ] [ y-y1 ]
+        #
+        # where DET = (-dx1 * dy + dy1 * dx)
+        #
+        # if DET is too small, they're parallel
+        #
+        DET = (-dx1 * dy + dy1 * dx)
+    
+        if np.abs(DET) > np.finfo(float).eps: 
+            DETinv = 1.0/DET
+        
+            # find the scalar amount along the "self" segment
+            r = DETinv * (-dy  * (x-x1) +  dx * (y-y1))        
+            # find the scalar amount along the input line
+            s = DETinv * (-dy1 * (x-x1) + dx1 * (y-y1))
+            if r >= 0 and r <= lenlin and s >= 0 and s <= lenseg:
+                # return the average of the two descriptions
+                xi = (x1 + r*dx1 + x + s*dx)/2.0
+                yi = (y1 + r*dy1 + y + s*dy)/2.0
+                intpoi = np.concatenate( ( intpoi, np.array([[xi, yi]]) ), axis = 0)
+    intpoi = np.delete(intpoi, 0, axis = 0)
+    if len(intpoi) > 0:
+        if len(intpoi.shape) == 1:
+            intpoi = intpoi.reshape(1,2)
+    intpoi = np.unique(intpoi,axis = 0)
+    return ( intpoi )
 def p2index(p, pv, d0 = None, sort = None):
     '''
     find points in p coinciding with pv
@@ -65,7 +167,7 @@ def p2index(p, pv, d0 = None, sort = None):
     ds = p2segment(p, pv)
     if d0 is None:
         d0 = 0
-    index_nodes = np.where(ds <= d0 + np.finfo(float).eps*1E6)[0]
+    index_nodes = np.where(ds <= d0 + TOL)[0]
 
     if sort is not None:
         dis = np.sqrt((p[index_nodes,0] -  pv[0,0])**2 + (p[index_nodes,1] -  pv[0,1])**2)
@@ -286,14 +388,13 @@ def adjustmesh(g, tips, gap):
     t = g.cell_nodes().indices.reshape((3, g.num_cells), order='f').T
     p = p[[0,1],:].T
 
-    tips_nod = []
+    tips_nod = np.array([], dtype = np.int32)
     if tips is not None:
         for i in range(tips.shape[0]):
             tip = tips[i,:]
-            id1 = np.where(np.isclose(p[:,0],tip[0]))[0]
-            id2 = np.where(np.isclose(p[:,1],tip[1]))[0]
-            tipind = np.intersect1d(id2,id1)[0]
-            tips_nod.append(tipind)
+            dis2tip = np.sqrt((p[:,0] - tip[0])**2 + (p[:,1] - tip[1])**2)
+            tipind = np.where(dis2tip == np.min(dis2tip))[0] 
+            tips_nod = np.append(tips_nod, tipind)
             
         face_ind = np.reshape(g.face_nodes.indices, (g.dim, -1), order='F').T
         frac_fac = np.where(g.tags['fracture_faces'])[0]  
@@ -396,7 +497,7 @@ def linear_interpolation(p1, t1, z1, p2):
             z2[i,k] = N0*v0 + N1*v1 + N2*v2
     return z2
 
-def trisurf( p, t, fn = None, point = None, value = None, infor = None):
+def trisurf( p, t, fn = None, point = None, value = None, vmin = None, vmax = None, infor = None):
     '''
     Plot a triangular mesh, points, represent value at each node by color 
     p = np.array(shape = (l, 2), dtype = float), p is the nodes's coordinates
@@ -409,11 +510,12 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
     
     import matplotlib.pyplot as plt
     import matplotlib.collections
+    import matplotlib as mpl
     fig, grid = plt.subplots()
     if t.shape[1] == 3:
         X = [p[t[:,0],0], p[t[:,1],0], p[t[:,2],0], p[t[:,0],0]]
         Y = [p[t[:,0],1], p[t[:,1],1], p[t[:,2],1], p[t[:,0],1]]
-        grid.plot(X, Y, 'k-', linewidth = 1)
+        grid.plot(X, Y, 'b-', linewidth = 0.1)
         if infor is not None:
             cenx = (p[t[:,0],0] + p[t[:,1],0] + p[t[:,2],0])/3
             ceny = (p[t[:,0],1] + p[t[:,1],1] + p[t[:,2],1])/3
@@ -443,31 +545,40 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
     
     if value is not None:
         if len(value) == t.shape[0]:
-            def showMeshPlot(nodes, elements, values, fig, grid):
-                y = p[:,0]
-                z = p[:,1]
-                def quatplot(y,z, quatrangles, values, ax=None, **kwargs):
+            plt.tripcolor(p[:,0], p[:,1], t, facecolors=value, edgecolors='k')
+            plt.gca().set_aspect('equal')
+            plt.colorbar()  
+            plt.clim(vmin, vmax)
+            # plt.show()
+            # def showMeshPlot(nodes, elements, values, fig, grid):
+            #     y = p[:,0]
+            #     z = p[:,1]
+            #     def quatplot(y,z, quatrangles, values, ax=None, **kwargs):
             
-                    if not ax: ax=plt.gca()
-                    yz = np.c_[y,z]
-                    verts= yz[quatrangles]
-                    pc = matplotlib.collections.PolyCollection(verts, **kwargs)
-                    pc.set_array(values)
-                    ax.add_collection(pc)
-                    ax.autoscale()
-                    return pc
+            #         if not ax: ax=plt.gca()
+            #         yz = np.c_[y,z]
+            #         verts= yz[quatrangles]
+            #         pc = matplotlib.collections.PolyCollection(verts, **kwargs)
+            #         pc.set_array(values)
+            #         ax.add_collection(pc)
+            #         ax.autoscale()
+            #         return pc
             
-                pc = quatplot(y,z, np.asarray(elements), values, ax = grid, 
-                         edgecolor="k", cmap="jet")
-                fig.colorbar(pc, ax = grid)        
-                grid.plot(y,z, marker="", ls="", color="crimson")
-            showMeshPlot(p, t, value, fig, grid)    
+            #     pc = quatplot(y,z, np.asarray(elements), values, ax = grid, 
+            #              edgecolor="k", cmap="jet")
+            #     fig.colorbar(pc, ax = grid)        
+            #     grid.plot(y,z, marker="", ls="", color="crimson")
+            #     plt.show()  
+            #     plt.clim(0, 1e7)
+                
+                
+            # showMeshPlot(p, t, value, fig, grid)    
         if len(value) == p.shape[0]:
             if t.shape[1] == 3:
                 x = p[:,0]
                 y = p[:,1]
                 z = value[:,0]
-                plt.tricontourf(x,y,t,z,1000,cmap = 'jet')
+                plt.tricontourf(x,y,t,z,1000,cmap = 'jet', interpolation = 'bilinear')
                 plt.colorbar()
      
             if t.shape[1] == 6:
@@ -476,24 +587,34 @@ def trisurf( p, t, fn = None, point = None, value = None, infor = None):
                 y = p[0:snode,1]
                 z = value[0:snode,0]
                 tt = t[:,[0, 2, 4]]
-                plt.tricontourf(x,y,tt,z,500,cmap = 'jet')
+                plt.tricontourf(x,y,tt,z,500,cmap = 'jet', interpolation = 'bilinear')
                 plt.colorbar()
-
+                
     plt.xlabel('m', fontsize=18)
     plt.ylabel('m', fontsize=18)
     plt.rcParams['xtick.labelsize']=18
     plt.rcParams['ytick.labelsize']=18
+    
     grid.set_aspect('equal')
     plt.show()    
+    
 
 ''' ############################ 
 
     Remeshing 
     
 ################################'''
-def refinement( p, t, fracture, tips, A0, lmin, gap):
+def refinement( p, t, p0, t0, fracture, tips, A0, lmin, gap):
     """ Mesh refinement around crack tips"""
-    node_tip = p2index(p,tips)
+    # node_tip = p2index(p,tips)
+    node_tip = np.array([], dtype = np.int32)
+    for i in range(len(tips)):
+        tipi = tips[i]
+        dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+        node_tipi = np.where( dis2tip == np.min(dis2tip) )[0]
+        node_tip = np.append(node_tip,node_tipi)
+        
+    
     node_on_frac = np.array([], dtype = np.int32)
     for i in range(len(fracture)):
         node_on_frac = np.append(node_on_frac, p2index(p,fracture[i],gap))
@@ -506,22 +627,25 @@ def refinement( p, t, fracture, tips, A0, lmin, gap):
     
     # trisurf( p, t, face = None, point = point, infor = 1)
     
-    cbl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    cbr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    ctl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
-    ctr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
+    cbl = np.intersect1d(np.where(p[:,0] < min(p[:,0]) + gap)[0], np.where(p[:,1] < min(p[:,1]) + gap)[0])[0]
+    cbr = np.intersect1d(np.where(p[:,0] > max(p[:,0]) - gap)[0], np.where(p[:,1] < min(p[:,1]) + gap)[0])[0]
+    ctl = np.intersect1d(np.where(p[:,0] < min(p[:,0]) + gap)[0], np.where(p[:,1] > max(p[:,1]) - gap)[0])[0]
+    ctr = np.intersect1d(np.where(p[:,0] > max(p[:,0]) - gap)[0], np.where(p[:,1] > max(p[:,1]) - gap)[0])[0]
     nodaro = p[[cbl, cbr, ctr, ctl, cbl],:]
     xc = (p[t[:,0],:] + p[t[:,1],:] + p[t[:,2],:])/3
     eleref1 = [] # find elements at tips
     eleref2 = [] # find elements around rossete
-    for i in range(tips.shape[0]):
-        tip = tips[i]
-        tipind = np.where(np.sqrt((p[:,0] - tip[0])**2 + (p[:,1] - tip[1])**2) < np.finfo(float).eps*1E5)[0]
-        eleclo = np.where(t == tipind)[0]
+    for i in range(len(tips)):
+        tipi = tips[i]
+        dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+        node_tipi = np.where( dis2tip == np.min(dis2tip) )[0]
+        
+        # node_tipi = np.where(np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2) < np.finfo(float).eps*1E5)[0]
+        eleclo = np.where(t == node_tipi)[0]
         eleref1 = np.concatenate((eleref1,eleclo))
         
-        dt = np.sqrt((xc[:,0] - tip[0])**2 + (xc[:,1] - tip[1])**2)
-        eleclo = np.where(dt < lmin*6)[0]
+        dt = np.sqrt((xc[:,0] - tipi[0])**2 + (xc[:,1] - tipi[1])**2)
+        eleclo = np.where(dt < lmin*8)[0]
         eleref2 = np.concatenate((eleref2,eleclo))
    
     if len(eleref1) > 0:
@@ -535,7 +659,7 @@ def refinement( p, t, fracture, tips, A0, lmin, gap):
         ycoord[:,1] = p[t[eleref1,1],1]
         ycoord[:,2] = p[t[eleref1,2],1]
         areele1 = area(xcoord,ycoord)
-        eleref1 = eleref1[np.where(areele1 > 4*A0)[0]]
+        eleref1 = eleref1[np.where(areele1 >= 5*A0)[0]]
 
     if len(eleref2) > 0:
         eleref2 = eleref2.astype(np.int32)    
@@ -548,7 +672,7 @@ def refinement( p, t, fracture, tips, A0, lmin, gap):
         ycoord[:,1] = p[t[eleref2,1],1]
         ycoord[:,2] = p[t[eleref2,2],1]
         areele2 = area(xcoord,ycoord)
-        eleref2 = eleref2[np.where(areele2 > 6*A0)[0]]   
+        eleref2 = eleref2[np.where(areele2 >= 9*A0)[0]]   
         
     eleref = np.int32(np.concatenate((eleref1,eleref2)))
     eleref = np.unique(eleref)
@@ -559,49 +683,463 @@ def refinement( p, t, fracture, tips, A0, lmin, gap):
         for i in range(len(fracture)):
             craindi = p2index(p,fracture[i],gap)
             nodfix = np.concatenate((nodfix,craindi))
-        t = removeduplicateelement(p, t)
+        st = removeduplicateelement(p, t)
+        
+        # mapping = np.int32(mapping_coordinate(p, p0)[0])
+        # nodfix = np.unique( np.append(nodfix, mapping) )
+        
+        nodfix = np.unique( nodfix )
+        
         p, t = smoothing(p, t, nodfix)
     return p, t
 
+# def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
+#     '''based on 2d grid with fractures from PorePy (gb)
+#        1. remesh at tip that propagates by rosettle elements
+#        2. defined split face
+#        3. update 2 dimensional grid in PorePy
+#        4. return a dictionary that specify which 1d grid and which face need to be slipted
+       
+#    Example:
+#        fracture1 = np.array([[0.4, 0.6], [0.5, 0.65], [0.6, 0.6]])
+#        fracture2 = np.array([[0.45, 0.2], [0.55, 0.2]])
+#        fracture = np.array([fracture1, fracture2])
+       
+#        newfrac = np.array([[0.6, 0.6], [0.63, 0.65]])
+
+#        #newfrac = np.array([[0.4, 0.6], [0.37, 0.65]])
+
+#        mesh_size = 0.07
+#        mesh_args = { "mesh_size_frac": mesh_size, "mesh_size_min": 1 * mesh_size, "mesh_size_bound": 5 * mesh_size } 
+#        box = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}  
+       
+#        tips, frac_pts, frac_edges = meshing.fracture_infor(fracture)
+#        network = pp.FractureNetwork2d(frac_pts.T, frac_edges.T, domain=box)
+#        gb = network.mesh(mesh_args)       
+#        pp.contact_conditions.set_projections(gb)
+        
+#        dic_split = meshing.remesh_at_tip(gb, fracture, newfrac)
+#        pp.propagate_fracture.propagate_fractures(gb, dic_split)
+       
+#        '''
+#     # fractures informations
+#     g2d = gb.grids_of_dimension(2)[0]
+#     g1d = gb.grids_of_dimension(1)
+    
+#     import collections
+#     global_fracture_nodes = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count > 1])
+#     global_fracture_nodes_T = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count > 2])
+#     global_fracture_nodes_X = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count > 3])
+    
+#     global_fracture_nodes = np.setdiff1d(global_fracture_nodes,global_fracture_nodes_T)
+    
+#     pair_contact_bef = np.zeros(shape = (len(global_fracture_nodes), 2), dtype = np.int32)
+#     for i in range(len(global_fracture_nodes)):
+#         pair_contact_bef[i,:] = np.where(g2d.global_point_ind == global_fracture_nodes[i])[0]
+#     if len(global_fracture_nodes_T) > 0:
+#         pair_contact_bef_T = np.zeros(shape = (len(global_fracture_nodes_T), 3), dtype = np.int32)
+#         for i in range(len(global_fracture_nodes_T)):
+#             pair_contact_bef_T[i,:] = np.where(g2d.global_point_ind == global_fracture_nodes_T[i])[0]
+            
+#     tips, frac_pts, frac_edges = fracture_infor(fracture)
+#     p_bef, t_bef = adjustmesh(g2d, tips, gap) 
+#     f_bef =  g2d.face_nodes.indices.reshape((2, g2d.num_faces), order='f').T 
+#     fc_bef = (p_bef[f_bef[:,0],:] + p_bef[f_bef[:,1],:])/2 
+    
+#     xx = np.tile(p_bef[:,0].reshape(p_bef.shape[0],1), [1,p_bef.shape[0]])
+#     yy = np.tile(p_bef[:,1].reshape(p_bef.shape[0],1), [1,p_bef.shape[0]])
+#     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
+#     np.fill_diagonal(dis, 100)
+#     indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+#     contac_nodes = np.vstack((indi, indj)).T
+#     contac_nodes = np.unique( np.sort(contac_nodes, axis = 1), axis = 0)
+#     # 
+#     # global_index_bef[contac_nodes]
+    
+#     faces_on_surface = []
+#     face_oneside_index = []
+#     face_1d_coordinate = []
+#     face_oneside_bef = []
+#     fc_frac_bef = []
+#     sgn_bef = []
+#     cel_bef = []
+#     for i in range(len(g1d)):
+#         data_edge = gb.edge_props((g2d, g1d[i]))
+#         mg = data_edge["mortar_grid"]
+#         faces_on_surface.append(mg.primary_to_mortar_int().tocsr().indices)
+#         mg.secondary_to_mortar_avg()
+#         face_oneside_index.append(mg._ind_face_on_other_side)
+#         face_1d, face_2d = np.where(mg._primary_to_mortar_int.toarray() == 1)
+#         face_1d_coordinate.append( (p_bef[f_bef[face_2d,0],:] + p_bef[f_bef[face_2d,1],:])/2 ) 
+#         face_oneside_bef.append( fc_bef[face_oneside_index[i],:] )
+#         fc_frac_bef.append( fc_bef[faces_on_surface[i],:] )
+#         sgn_befi, cel_befi =  g2d.signs_and_cells_of_boundary_faces(faces_on_surface[i])
+#         sgn_bef.append(sgn_befi); cel_bef.append(cel_befi)
+    
+#     confaccoo1 = []; confaccoo2 = []; confacindglo = []
+#     for e, d_e in gb.edges_of_node(g2d):
+#         face_cells_bef = d_e["face_cells"]
+#         row, col, sgn = sps.find(face_cells_bef)
+        
+#         xx = np.tile(fc_bef[col,0].reshape(len(col),1), [1,len(col)])
+#         yy = np.tile(fc_bef[col,1].reshape(len(col),1), [1,len(col)])
+#         dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
+#         np.fill_diagonal(dis, 100)
+#         indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+#         confac = np.vstack((indi, indj)).T
+#         confac = np.unique( np.sort(confac, axis = 1), axis = 0)
+#         confacind = np.vstack(( col[confac[:,0]], col[confac[:,1]] )).T
+#         confacindglo.append(confacind)
+#         confaccoo1.append(fc_bef[confacind[:,0],:])
+#         confaccoo2.append(fc_bef[confacind[:,1],:])
+        
+    
+#     ''' Refinement and remesh by QPE. return: nodes coordinates, cell indices, faces- nodes, cells - faces '''
+#     p, t, fn, cf, iniang = do_remesh(p, t, lmin, fracture, gap, newfrac)
+#     # trisurf( p_bef, t_bef, face = f_bef, point = None, infor = 1)
+#     # trisurf( p, t, face = fn, point = None, infor = 1)
+#     ''' after remesh, defined informations that need to be updated on the porepy gridbucket '''
+#     # define contact faces
+    
+#     faccen = (p[fn[:,0],:] + p[fn[:,1],:])/2
+#     xx = np.tile(faccen[:,0].reshape(faccen.shape[0],1), [1,faccen.shape[0]])
+#     yy = np.tile(faccen[:,1].reshape(faccen.shape[0],1), [1,faccen.shape[0]])
+#     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
+#     np.fill_diagonal(dis, 100)
+#     indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+#     confac = np.vstack((indi, indj)).T
+#     confac = np.unique( np.sort(confac, axis = 1), axis = 0)
+#     delconfac = []
+#     for i in range(confac.shape[0]):
+#         fac0, fac1 = confac[i,:]
+#         if np.any(np.sum(np.concatenate((cf == fac0, cf == fac1), axis = 1), axis=1) == 2):
+#            delconfac.append(i)
+#     confac = np.delete(confac,delconfac, axis = 0)    
+    
+#     # determine which g_1d be split
+#     split_1d = np.array([], dtype = np.int32)
+#     count = 0
+#     for i in range(len(fracture)):
+#         frai = fracture[i]
+#         if frai.shape[0] > 2:
+#             for j in range(frai.shape[0] - 1):
+#                 for k in range(len(newfrac)):   
+#                     ds = p2segment(newfrac[k][0,:],frai[[j, j+1],:])
+#                     if ds < np.finfo(float).eps*1E5:
+#                         split_1d = np.append(split_1d,count)
+#             count = count + 1    
+#         else:
+#             for k in range(len(newfrac)):   
+#                 ds = p2segment(newfrac[k][0,:],frai)
+#                 if ds < np.finfo(float).eps*1E5:
+#                     split_1d = np.append(split_1d,count)
+#             count = count + 1
+
+    
+#     confacglo = []
+#     for j in range(len(confaccoo1)):
+#         confacind_aft = np.copy(confacindglo[j])
+#         for i in range(confacind_aft.shape[0]):
+#             facind1 = np.where( np.sqrt( (faccen[:,0] - confaccoo1[j][i,0])**2 + (faccen[:,1] - confaccoo1[j][i,1])**2 ) < np.finfo(float).eps*1E8 )[0]
+#             facind2 = np.where( np.sqrt( (faccen[:,0] - confaccoo2[j][i,0])**2 + (faccen[:,1] - confaccoo2[j][i,1])**2 ) < np.finfo(float).eps*1E8 )[0]
+#             confacind_aft[i,0] = facind1
+#             confacind_aft[i,1] = facind2
+#         confacglo.append(confacind_aft)
+    
+#     # define contact nodes
+#     xx = np.tile(p[:,0].reshape(p.shape[0],1), [1,p.shape[0]])
+#     yy = np.tile(p[:,1].reshape(p.shape[0],1), [1,p.shape[0]])
+#     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
+#     np.fill_diagonal(dis, 100)
+#     indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+#     connod = np.vstack((indi, indj)).T
+#     connod = np.unique( np.sort(connod, axis = 1), axis = 0)
+    
+#     # define data faces - nodes
+#     datfn = np.zeros(fn.shape[0]*2) == 0
+    
+        
+#     # define faces on fracture
+#     facfra = np.zeros(fn.shape[0]) == 1; facfra[confac] = True   
+    
+#     # find faces connect to tips   
+#     factipind = []
+#     for i in range(tips.shape[0]):
+#         tipi = tips[i,:]
+#         indtip = np.where(np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2) < np.finfo(float).eps*1E5)[0]
+#         factipind = np.append(factipind, np.where(fn ==  indtip)[0])
+#     factipind = np.int32(factipind)
+#     factip = np.zeros(fn.shape[0]) == 1; #factip[factipind] = True  
+    
+#     # find faces on boundary, for rectangular domain only
+#     cbl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
+#     cbr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
+#     ctl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
+#     ctr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
+#     nodaro = p[[cbl, cbr, ctr, ctl, cbl],:]
+#     facbouind = p2index( faccen, nodaro)
+#     facbou = np.zeros(fn.shape[0]) == 1; facbou[facbouind] = True
+    
+#     # find nodes on fracture
+#     nodfraind = []
+#     for i in range(len(fracture)):
+#         fraci = fracture[i]
+#         nodfraind = np.append(nodfraind, p2index( p, fraci, d0 = gap))
+#     nodfraind = np.int32(nodfraind)
+#     nodfra = np.zeros(p.shape[0]) == 1; nodfra[nodfraind] = True
+    
+#     # Find nodes tips
+#     nodtipind = []
+#     for i in range(tips.shape[0]):
+#         tipi = tips[i,:]
+#         indtip = np.where(np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2) < np.finfo(float).eps*1E5)[0]
+#         nodtipind = np.append(nodtipind, indtip)
+#     nodtipind = np.int32(nodtipind)
+#     nodtip = np.zeros(p.shape[0]) == 1; #nodtip[nodtipind] = True  
+    
+#     # find nodes on boundary
+#     nodbouind = p2index( p, nodaro)
+#     nodbou = np.zeros(p.shape[0]) == 1; nodbou[nodbouind] = True  
+    
+#     tip_prop = np.empty(shape=(len(newfrac),2))
+#     new_tip = np.empty(shape=(len(newfrac),2))
+#     split_face = np.array([], dtype = np.int32)
+#     for i in range(len(newfrac)):
+#         dis = np.sqrt( (p[:,0] - newfrac[i][0,0])**2 + (p[:,1] - newfrac[i][0,1])**2 )
+#         ind0 = np.argmin(dis)
+#         dis = np.sqrt( (p[:,0] - newfrac[i][1,0])**2 + (p[:,1] - newfrac[i][1,1])**2 )
+#         ind1 = np.argmin(dis)
+#         p[ind1,:] = newfrac[i][1,:]
+#         tip_prop[i,:] = newfrac[i][0,:]
+#         new_tip[i,:] = newfrac[i][1,:]
+#         split_face = np.append(split_face, 
+#                                np.intersect1d(np.where(fn[:,0] == min(ind0, ind1)), np.where(fn[:,1] == max(ind0, ind1)))[0])
+        
+#     p_aft = np.copy(p)
+#     face_center_modified = (p_aft[fn[:,0],:] + p_aft[fn[:,1],:])/2  
+    
+#     pair_contact_aft = np.copy(pair_contact_bef)
+#     for i in range(pair_contact_aft.shape[0]):
+#         pair_contact_aft[i, 0] = np.where( np.sqrt((p_bef[pair_contact_bef[i,0],0] - p_aft[:,0])**2 +
+#                                                    (p_bef[pair_contact_bef[i,0],1] - p_aft[:,1])**2) < 
+#                                                     np.finfo(float).eps*1E5)[0]
+#         pair_contact_aft[i, 1] = np.where( np.sqrt((p_bef[pair_contact_bef[i,1],0] - p_aft[:,0])**2 +
+#                                                    (p_bef[pair_contact_bef[i,1],1] - p_aft[:,1])**2) < 
+#                                                     np.finfo(float).eps*1E5)[0]
+        
+#     pair_contact_aft_T = np.copy(pair_contact_bef_T)
+#     for i in range(pair_contact_aft_T.shape[0]):
+#         pair_contact_aft_T[i, 0] = np.where( np.sqrt((p_bef[pair_contact_bef_T[i,0],0] - p_aft[:,0])**2 +
+#                                                      (p_bef[pair_contact_bef_T[i,0],1] - p_aft[:,1])**2) < 
+#                                                       np.finfo(float).eps*1E5)[0]
+#         pair_contact_aft_T[i, 1] = np.where( np.sqrt((p_bef[pair_contact_bef_T[i,1],0] - p_aft[:,0])**2 +
+#                                                      (p_bef[pair_contact_bef_T[i,1],1] - p_aft[:,1])**2) < 
+#                                                       np.finfo(float).eps*1E5)[0]
+
+#     # close the crack   
+#     p0 = ( p[pair_contact_aft[:,0],:] + p[pair_contact_aft[:,1],:])/2
+#     p[pair_contact_aft[:,0],:] = p0; p[pair_contact_aft[:,1],:] = p0  
+    
+#     # define data cells - faces
+#     datcf = np.copy(cf)*0
+#     check = [np.max(cf) + 10]
+#     for e in range(cf.shape[0]):
+#         for i in range(cf.shape[1]):
+#             idi = cf[e,i]
+#             if any(idi == check):
+#                 datcf[e,i] = -1
+#             else:
+#                 datcf[e,i] = 1
+#             check.append(idi)
+    
+#     # trisurf( p_aft , t, face = None, infor = 1, value = None, vector = None, point = None, show = 1)
+#     for j in range(len(faces_on_surface)):
+#         for i in range(len(faces_on_surface[j])):
+#             # print(i)
+#             faces_frac_aft = np.where( np.sqrt((fc_frac_bef[j][i,0] - face_center_modified[:,0])**2 +
+#                                                (fc_frac_bef[j][i,1] - face_center_modified[:,1])**2) < np.finfo(float).eps*1E5)[0]
+#             row, col = np.where(faces_frac_aft == cf)
+#             datcf[row, col] = sgn_bef[j][i]
+    
+    
+#     ''' now update Porepy gridbucket ''' 
+#     fn = np.int32(fn)
+#     num_cells_aft = t.shape[0]
+#     num_faces_aft = fn.shape[0]
+#     num_nodes_aft = p.shape[0] 
+    
+    
+#     g2d.num_cells = num_cells_aft
+#     g2d.num_faces = num_faces_aft
+#     g2d.num_nodes = num_nodes_aft
+    
+#     # global_fracture_nodes = np.array([item for item, count in 
+#     #                                   collections.Counter(g2d.global_point_ind).items() if count > 1])
+#     global_point_ind_bef = g2d.global_point_ind
+#     global_point_ind_aft = np.zeros(num_nodes_aft, dtype = np.int32)
+#     for i in range(pair_contact_aft.shape[0]):
+#         global_point_ind_aft[pair_contact_aft[i,:]] = global_point_ind_bef[pair_contact_bef[i,:]]
+#     count = 0
+#     for i in range(len(global_point_ind_aft)):
+#         if global_point_ind_aft[i] == 0:
+#             while np.in1d(count, global_fracture_nodes):
+#                 count = count + 1
+#             global_point_ind_aft[i] = count
+#             count = count + 1
+            
+#     for i, g1di in enumerate(g1d): 
+#         nodes1d = g1di.nodes[[0,1],:].T
+#         index = np.array([], dtype = np.int32)
+#         for j in range(nodes1d.shape[0]):
+#             indexj = np.where(np.sqrt( (p_aft[:,0] - nodes1d[j,0])**2 + (p_aft[:,1] - nodes1d[j,1])**2 )  < 
+#                              gap + np.finfo(float).eps*1E8)[0][0]
+#             index = np.append(index,indexj)
+        
+#         index_global = global_point_ind_aft[index]
+#         g1di.global_point_ind = index_global
+    
+#     g2d.global_point_ind = global_point_ind_aft
+#     g2d.parent_cell_ind = np.arange(num_cells_aft, dtype = np.int32)
+    
+#     g2d.cell_faces.indices = cf.reshape(num_cells_aft*3)
+#     g2d.cell_faces.indptr = np.arange(0,(cf.shape[0] + 1)*3,3, dtype = np.int32)
+#     g2d.cell_faces.data = datcf.reshape(num_cells_aft*3)
+#     g2d.cell_faces._shape = (num_faces_aft,num_cells_aft)
+    
+#     g2d.face_nodes.indices = fn.reshape(num_faces_aft*2)
+#     g2d.face_nodes.indptr = np.arange(0,(num_faces_aft + 1)*2,2, dtype = np.int32)
+#     g2d.face_nodes.data = datfn
+#     g2d.face_nodes._shape = (num_nodes_aft,num_faces_aft)
+    
+#     g2d.nodes = np.concatenate((p, 0*p[:,0].reshape(num_nodes_aft,1)), axis = 1).T
+    
+
+#     update_fields = g2d.tags.keys()
+#     for i, key in enumerate(update_fields):
+#         # faces related tags are doubled and the value is inherit from the original
+#         if key.startswith("fracture") and key.endswith("_faces"):
+#             g2d.tags[key] = facfra
+#         if key.startswith("domain") and key.endswith("_faces"):
+#             g2d.tags[key] = facbou
+#         if key.startswith("tip") and key.endswith("_faces"):
+#             g2d.tags[key] = factip
+#         if key.startswith("fractur") and key.endswith("_nodes"):
+#             g2d.tags[key] = nodfra
+#         if key.startswith("tip") and key.endswith("_nodes"):
+#             g2d.tags[key] = nodtip    
+#         if key.startswith("domain") and key.endswith("_nodes"):
+#             g2d.tags[key] = nodbou   
+ 
+#     data = gb.node_props(g2d)
+#     data['state']['mechanics']['bc_values'] = np.zeros(num_faces_aft*2)
+#     data['state']['iterate']['aperture'] = np.ones(num_cells_aft)
+#     data['state']['iterate']['specific_volume'] = np.ones(num_cells_aft)
+    
+    
+#     count = 0    
+#     for e, d_e in gb.edges_of_node(g2d):
+#         confac = confacglo[count]
+#         face_cells_new = np.full((confac.shape[0], num_faces_aft), False)
+#         for i  in range(confac.shape[0]):
+#             face_cells_new[i, confac[i,:]] = np.array([True, True])
+#         face_cells_new = sps.csr_matrix(face_cells_new)
+#         row, col, sgn = sps.find(face_cells_new)
+#         face_cells_new = sps.csc_matrix((sgn, (row, col)), shape=(confac.shape[0], num_faces_aft))
+#         d_e["face_cells"] = face_cells_new
+        
+#         count = count + 1
+    
+#     mapping_faces_1d_2d = []    
+#     for j in range(len(face_1d_coordinate)):
+#         mapping_faces_1d_2dj = np.zeros(( face_1d_coordinate[j].shape[0], num_faces_aft))        
+#         for i in range( face_1d_coordinate[j].shape[0] ):
+#             mapping_faces_1d_2dj[i, np.where( np.sqrt((face_1d_coordinate[j][i,0] - face_center_modified[:,0])**2 +
+#                                                      (face_1d_coordinate[j][i,1] - face_center_modified[:,1])**2) < 
+#                                                      np.finfo(float).eps*1E5)[0]] = 1
+            
+#         mapping_faces_1d_2d.append(mapping_faces_1d_2dj)
+    
+#     face_oneside_index_aft = []
+#     for j in range(len(face_oneside_index)):
+#         face_oneside_index_aftj = np.copy(face_oneside_index[j])
+#         for i in range(len(face_oneside_index[j])):
+#             face_oneside_index_aftj[i] = np.where( np.sqrt((face_oneside_bef[j][i,0] - face_center_modified[:,0])**2 +
+#                                                              (face_oneside_bef[j][i,1] - face_center_modified[:,1])**2) < 
+#                                                     np.finfo(float).eps*1E5)[0]
+#         face_oneside_index_aft.append(face_oneside_index_aftj)
+    
+   
+#     for i in range(len(g1d)):
+#         data_edge = gb.edge_props((g2d, g1d[i]))
+#         mg = data_edge["mortar_grid"]
+        
+#         mapping_faces_1d_2di = sps.csc_matrix(mapping_faces_1d_2d[i])
+#         row, col, sgn = sps.find(mapping_faces_1d_2di)
+#         mapping_faces_1d_2di = sps.csc_matrix((sgn, (row, col)), shape=(face_1d_coordinate[i].shape[0], num_faces_aft))
+        
+#         face_map = np.zeros(num_faces_aft, dtype = np.int32)
+#         count = 1
+#         for j in range(len(col)-1):
+#             k = j + 1
+#             if col[k] == col[k-1] + 1:
+#                 face_map[col[k]] = count
+#             else:
+#                 face_map[col[k-1]+1::] = count                   
+#             count = count + 1
+#         face_map[col[k]+1::] = count 
+
+#         mg._primary_to_mortar_int = mapping_faces_1d_2di
+#         mg._ind_face_on_other_side = face_oneside_index_aft[i]
+             
+#     g2d.compute_geometry()
+#     return tip_prop, new_tip, split_face
 def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     '''based on 2d grid with fractures from PorePy (gb)
-       1. remesh at tip that propagates by rosettle elements
-       2. defined split face
-       3. update 2 dimensional grid in PorePy
-       4. return a dictionary that specify which 1d grid and which face need to be slipted
+        1. remesh at tip that propagates by rosettle elements
+        2. defined split face
+        3. update 2 dimensional grid in PorePy
+        4. return a dictionary that specify which 1d grid and which face need to be slipted
        
-   Example:
-       fracture1 = np.array([[0.4, 0.6], [0.5, 0.65], [0.6, 0.6]])
-       fracture2 = np.array([[0.45, 0.2], [0.55, 0.2]])
-       fracture = np.array([fracture1, fracture2])
+    Example:
+        fracture1 = np.array([[0.4, 0.6], [0.5, 0.65], [0.6, 0.6]])
+        fracture2 = np.array([[0.45, 0.2], [0.55, 0.2]])
+        fracture = np.array([fracture1, fracture2])
        
-       newfrac = np.array([[0.6, 0.6], [0.63, 0.65]])
+        newfrac = np.array([[0.6, 0.6], [0.63, 0.65]])
 
-       #newfrac = np.array([[0.4, 0.6], [0.37, 0.65]])
+        #newfrac = np.array([[0.4, 0.6], [0.37, 0.65]])
 
-       mesh_size = 0.07
-       mesh_args = { "mesh_size_frac": mesh_size, "mesh_size_min": 1 * mesh_size, "mesh_size_bound": 5 * mesh_size } 
-       box = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}  
+        mesh_size = 0.07
+        mesh_args = { "mesh_size_frac": mesh_size, "mesh_size_min": 1 * mesh_size, "mesh_size_bound": 5 * mesh_size } 
+        box = {"xmin": 0, "ymin": 0, "xmax": 1, "ymax": 1}  
        
-       tips, frac_pts, frac_edges = meshing.fracture_infor(fracture)
-       network = pp.FractureNetwork2d(frac_pts.T, frac_edges.T, domain=box)
-       gb = network.mesh(mesh_args)       
-       pp.contact_conditions.set_projections(gb)
+        tips, frac_pts, frac_edges = meshing.fracture_infor(fracture)
+        network = pp.FractureNetwork2d(frac_pts.T, frac_edges.T, domain=box)
+        gb = network.mesh(mesh_args)       
+        pp.contact_conditions.set_projections(gb)
         
-       dic_split = meshing.remesh_at_tip(gb, fracture, newfrac)
-       pp.propagate_fracture.propagate_fractures(gb, dic_split)
+        dic_split = meshing.remesh_at_tip(gb, fracture, newfrac)
+        pp.propagate_fracture.propagate_fractures(gb, dic_split)
        
-       '''
+        '''
     # fractures informations
     g2d = gb.grids_of_dimension(2)[0]
     g1d = gb.grids_of_dimension(1)
     
     import collections
-    global_fracture_nodes = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count > 1])
+    global_fracture_nodes_I = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count == 2])
+    global_fracture_nodes_T = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count == 3])
+    global_fracture_nodes_X = np.array([item for item, count in collections.Counter(g2d.global_point_ind).items() if count == 4])
     
-    pair_contact_bef = np.zeros(shape = (len(global_fracture_nodes), 2), dtype = np.int32)
-    for i in range(len(global_fracture_nodes)):
-        pair_contact_bef[i,:] = np.where(g2d.global_point_ind == global_fracture_nodes[i])[0]
+    global_fracture_nodes = np.append(global_fracture_nodes_I,global_fracture_nodes_T)
+    
+    pair_contact_bef_I = np.zeros(shape = (len(global_fracture_nodes_I), 2), dtype = np.int32)
+    for i in range(len(global_fracture_nodes_I)):
+        pair_contact_bef_I[i,:] = np.where(g2d.global_point_ind == global_fracture_nodes_I[i])[0]
+    if len(global_fracture_nodes_T) > 0:
+        pair_contact_bef_T = np.zeros(shape = (len(global_fracture_nodes_T), 3), dtype = np.int32)
+        for i in range(len(global_fracture_nodes_T)):
+            pair_contact_bef_T[i,:] = np.where(g2d.global_point_ind == global_fracture_nodes_T[i])[0]
     
     tips, frac_pts, frac_edges = fracture_infor(fracture)
     p_bef, t_bef = adjustmesh(g2d, tips, gap) 
@@ -612,7 +1150,7 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     yy = np.tile(p_bef[:,1].reshape(p_bef.shape[0],1), [1,p_bef.shape[0]])
     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
     np.fill_diagonal(dis, 100)
-    indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+    indi, indj = np.where(dis < gap + TOL)
     contac_nodes = np.vstack((indi, indj)).T
     contac_nodes = np.unique( np.sort(contac_nodes, axis = 1), axis = 0)
     # 
@@ -647,7 +1185,7 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         yy = np.tile(fc_bef[col,1].reshape(len(col),1), [1,len(col)])
         dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
         np.fill_diagonal(dis, 100)
-        indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+        indi, indj = np.where(dis < gap + TOL)
         confac = np.vstack((indi, indj)).T
         confac = np.unique( np.sort(confac, axis = 1), axis = 0)
         confacind = np.vstack(( col[confac[:,0]], col[confac[:,1]] )).T
@@ -668,14 +1206,14 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     yy = np.tile(faccen[:,1].reshape(faccen.shape[0],1), [1,faccen.shape[0]])
     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
     np.fill_diagonal(dis, 100)
-    indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+    indi, indj = np.where(dis < gap + TOL)
     confac = np.vstack((indi, indj)).T
     confac = np.unique( np.sort(confac, axis = 1), axis = 0)
     delconfac = []
     for i in range(confac.shape[0]):
         fac0, fac1 = confac[i,:]
         if np.any(np.sum(np.concatenate((cf == fac0, cf == fac1), axis = 1), axis=1) == 2):
-           delconfac.append(i)
+            delconfac.append(i)
     confac = np.delete(confac,delconfac, axis = 0)    
     
     # determine which g_1d be split
@@ -687,13 +1225,13 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
             for j in range(frai.shape[0] - 1):
                 for k in range(len(newfrac)):   
                     ds = p2segment(newfrac[k][0,:],frai[[j, j+1],:])
-                    if ds < np.finfo(float).eps*1E5:
+                    if ds < TOL:
                         split_1d = np.append(split_1d,count)
             count = count + 1    
         else:
             for k in range(len(newfrac)):   
                 ds = p2segment(newfrac[k][0,:],frai)
-                if ds < np.finfo(float).eps*1E5:
+                if ds < TOL:
                     split_1d = np.append(split_1d,count)
             count = count + 1
 
@@ -702,8 +1240,12 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     for j in range(len(confaccoo1)):
         confacind_aft = np.copy(confacindglo[j])
         for i in range(confacind_aft.shape[0]):
-            facind1 = np.where( np.sqrt( (faccen[:,0] - confaccoo1[j][i,0])**2 + (faccen[:,1] - confaccoo1[j][i,1])**2 ) < np.finfo(float).eps*1E8 )[0]
-            facind2 = np.where( np.sqrt( (faccen[:,0] - confaccoo2[j][i,0])**2 + (faccen[:,1] - confaccoo2[j][i,1])**2 ) < np.finfo(float).eps*1E8 )[0]
+            dis1 = np.sqrt( (faccen[:,0] - confaccoo1[j][i,0])**2 + (faccen[:,1] - confaccoo1[j][i,1])**2 )
+            facind1 = np.where( dis1 == np.min(dis1) )[0]
+            
+            dis2 = np.sqrt( (faccen[:,0] - confaccoo2[j][i,0])**2 + (faccen[:,1] - confaccoo2[j][i,1])**2 )
+            facind2 = np.where( dis2 == np.min(dis2) )[0]
+            
             confacind_aft[i,0] = facind1
             confacind_aft[i,1] = facind2
         confacglo.append(confacind_aft)
@@ -713,7 +1255,7 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     yy = np.tile(p[:,1].reshape(p.shape[0],1), [1,p.shape[0]])
     dis = np.sqrt( (xx - xx.T)**2 + (yy - yy.T)**2 )
     np.fill_diagonal(dis, 100)
-    indi, indj = np.where(dis < gap + np.finfo(float).eps*1E5)
+    indi, indj = np.where(dis < gap + TOL)
     connod = np.vstack((indi, indj)).T
     connod = np.unique( np.sort(connod, axis = 1), axis = 0)
     
@@ -728,16 +1270,17 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     factipind = []
     for i in range(tips.shape[0]):
         tipi = tips[i,:]
-        indtip = np.where(np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2) < np.finfo(float).eps*1E5)[0]
+        dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+        indtip = np.where( dis2tip == np.min(dis2tip) )[0]
         factipind = np.append(factipind, np.where(fn ==  indtip)[0])
     factipind = np.int32(factipind)
     factip = np.zeros(fn.shape[0]) == 1; #factip[factipind] = True  
     
     # find faces on boundary, for rectangular domain only
-    cbl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    cbr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    ctl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
-    ctr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
+    cbl = np.intersect1d(np.where(p[:,0] < min(p[:,0]) + gap)[0], np.where(p[:,1] < min(p[:,1]) + gap)[0])[0]
+    cbr = np.intersect1d(np.where(p[:,0] > max(p[:,0]) - gap)[0], np.where(p[:,1] < min(p[:,1]) + gap)[0])[0]
+    ctl = np.intersect1d(np.where(p[:,0] < min(p[:,0]) + gap)[0], np.where(p[:,1] > max(p[:,1]) - gap)[0])[0]
+    ctr = np.intersect1d(np.where(p[:,0] > max(p[:,0]) - gap)[0], np.where(p[:,1] > max(p[:,1]) - gap)[0])[0]
     nodaro = p[[cbl, cbr, ctr, ctl, cbl],:]
     facbouind = p2index( faccen, nodaro)
     facbou = np.zeros(fn.shape[0]) == 1; facbou[facbouind] = True
@@ -754,7 +1297,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     nodtipind = []
     for i in range(tips.shape[0]):
         tipi = tips[i,:]
-        indtip = np.where(np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2) < np.finfo(float).eps*1E5)[0]
+        dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+        indtip = np.where( dis2tip == np.min(dis2tip) )[0]
         nodtipind = np.append(nodtipind, indtip)
     nodtipind = np.int32(nodtipind)
     nodtip = np.zeros(p.shape[0]) == 1; #nodtip[nodtipind] = True  
@@ -775,24 +1319,33 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         tip_prop[i,:] = newfrac[i][0,:]
         new_tip[i,:] = newfrac[i][1,:]
         split_face = np.append(split_face, 
-                               np.intersect1d(np.where(fn[:,0] == min(ind0, ind1)), np.where(fn[:,1] == max(ind0, ind1)))[0])
+                                np.intersect1d(np.where(fn[:,0] == min(ind0, ind1)), np.where(fn[:,1] == max(ind0, ind1)))[0])
         
     p_aft = np.copy(p)
     face_center_modified = (p_aft[fn[:,0],:] + p_aft[fn[:,1],:])/2  
     
-    pair_contact_aft = np.copy(pair_contact_bef)
-    for i in range(pair_contact_aft.shape[0]):
-        pair_contact_aft[i, 0] = np.where( np.sqrt((p_bef[pair_contact_bef[i,0],0] - p_aft[:,0])**2 +
-                                                   (p_bef[pair_contact_bef[i,0],1] - p_aft[:,1])**2) < 
-                                                    np.finfo(float).eps*1E5)[0]
-        pair_contact_aft[i, 1] = np.where( np.sqrt((p_bef[pair_contact_bef[i,1],0] - p_aft[:,0])**2 +
-                                                   (p_bef[pair_contact_bef[i,1],1] - p_aft[:,1])**2) < 
-                                                    np.finfo(float).eps*1E5)[0]
-
+    pair_contact_aft_I = np.copy(pair_contact_bef_I)
+    for i in range(pair_contact_aft_I.shape[0]):
+        dis1 = np.sqrt((p_bef[pair_contact_bef_I[i,0],0] - p_aft[:,0])**2 + (p_bef[pair_contact_bef_I[i,0],1] - p_aft[:,1])**2)
+        dis2 = np.sqrt((p_bef[pair_contact_bef_I[i,1],0] - p_aft[:,0])**2 + (p_bef[pair_contact_bef_I[i,1],1] - p_aft[:,1])**2)
+        pair_contact_aft_I[i, 0] = np.where( dis1 == np.min(dis1) )[0]
+        pair_contact_aft_I[i, 1] = np.where( dis2 == np.min(dis2) )[0]
+    if len(global_fracture_nodes_T) > 0:    
+        pair_contact_aft_T = np.copy(pair_contact_bef_T)
+        for i in range(pair_contact_aft_T.shape[0]):
+            pair_contact_aft_T[i, 0] = np.where( np.sqrt((p_bef[pair_contact_bef_T[i,0],0] - p_aft[:,0])**2 +
+                                                         (p_bef[pair_contact_bef_T[i,0],1] - p_aft[:,1])**2) < TOL)[0]
+            pair_contact_aft_T[i, 1] = np.where( np.sqrt((p_bef[pair_contact_bef_T[i,1],0] - p_aft[:,0])**2 +
+                                                         (p_bef[pair_contact_bef_T[i,1],1] - p_aft[:,1])**2) < TOL)[0]
+            pair_contact_aft_T[i, 2] = np.where( np.sqrt((p_bef[pair_contact_bef_T[i,2],0] - p_aft[:,0])**2 +
+                                                         (p_bef[pair_contact_bef_T[i,2],1] - p_aft[:,1])**2) < TOL)[0]
     # close the crack   
-    p0 = ( p[pair_contact_aft[:,0],:] + p[pair_contact_aft[:,1],:])/2
-    p[pair_contact_aft[:,0],:] = p0; p[pair_contact_aft[:,1],:] = p0  
+    p0 = ( p[pair_contact_aft_I[:,0],:] + p[pair_contact_aft_I[:,1],:])/2
+    p[pair_contact_aft_I[:,0],:] = p0; p[pair_contact_aft_I[:,1],:] = p0  
     
+    if len(global_fracture_nodes_T) > 0:
+        p0 = ( p[pair_contact_aft_T[:,0],:] + p[pair_contact_aft_T[:,1],:] + p[pair_contact_aft_T[:,2],:])/3
+        p[pair_contact_aft_T[:,0],:] = p0; p[pair_contact_aft_T[:,1],:] = p0 ; p[pair_contact_aft_T[:,2],:] = p0  
     # define data cells - faces
     datcf = np.copy(cf)*0
     check = [np.max(cf) + 10]
@@ -810,7 +1363,7 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         for i in range(len(faces_on_surface[j])):
             # print(i)
             faces_frac_aft = np.where( np.sqrt((fc_frac_bef[j][i,0] - face_center_modified[:,0])**2 +
-                                               (fc_frac_bef[j][i,1] - face_center_modified[:,1])**2) < np.finfo(float).eps*1E5)[0]
+                                                (fc_frac_bef[j][i,1] - face_center_modified[:,1])**2) < TOL)[0]
             row, col = np.where(faces_frac_aft == cf)
             datcf[row, col] = sgn_bef[j][i]
     
@@ -829,12 +1382,16 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
     # global_fracture_nodes = np.array([item for item, count in 
     #                                   collections.Counter(g2d.global_point_ind).items() if count > 1])
     global_point_ind_bef = g2d.global_point_ind
-    global_point_ind_aft = np.zeros(num_nodes_aft, dtype = np.int32)
-    for i in range(pair_contact_aft.shape[0]):
-        global_point_ind_aft[pair_contact_aft[i,:]] = global_point_ind_bef[pair_contact_bef[i,:]]
+    global_point_ind_aft = np.int32(np.zeros(num_nodes_aft, dtype = np.int32) + 10*num_nodes_aft)
+    for i in range(pair_contact_aft_I.shape[0]):
+        global_point_ind_aft[pair_contact_aft_I[i,:]] = global_point_ind_bef[pair_contact_bef_I[i,:]]
+    if len(global_fracture_nodes_T) > 0:
+        for i in range(pair_contact_aft_T.shape[0]):
+            global_point_ind_aft[pair_contact_aft_T[i,:]] = global_point_ind_bef[pair_contact_bef_T[i,:]]    
+        
     count = 0
     for i in range(len(global_point_ind_aft)):
-        if global_point_ind_aft[i] == 0:
+        if global_point_ind_aft[i] == 10*num_nodes_aft:
             while np.in1d(count, global_fracture_nodes):
                 count = count + 1
             global_point_ind_aft[i] = count
@@ -845,7 +1402,7 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         index = np.array([], dtype = np.int32)
         for j in range(nodes1d.shape[0]):
             indexj = np.where(np.sqrt( (p_aft[:,0] - nodes1d[j,0])**2 + (p_aft[:,1] - nodes1d[j,1])**2 )  < 
-                             gap + np.finfo(float).eps*1E8)[0][0]
+                              gap + TOLGAP*gap)[0][0]
             index = np.append(index,indexj)
         
         index_global = global_point_ind_aft[index]
@@ -907,8 +1464,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         mapping_faces_1d_2dj = np.zeros(( face_1d_coordinate[j].shape[0], num_faces_aft))        
         for i in range( face_1d_coordinate[j].shape[0] ):
             mapping_faces_1d_2dj[i, np.where( np.sqrt((face_1d_coordinate[j][i,0] - face_center_modified[:,0])**2 +
-                                                     (face_1d_coordinate[j][i,1] - face_center_modified[:,1])**2) < 
-                                                     np.finfo(float).eps*1E5)[0]] = 1
+                                                      (face_1d_coordinate[j][i,1] - face_center_modified[:,1])**2) < 
+                                                      TOL)[0]] = 1
             
         mapping_faces_1d_2d.append(mapping_faces_1d_2dj)
     
@@ -917,8 +1474,8 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
         face_oneside_index_aftj = np.copy(face_oneside_index[j])
         for i in range(len(face_oneside_index[j])):
             face_oneside_index_aftj[i] = np.where( np.sqrt((face_oneside_bef[j][i,0] - face_center_modified[:,0])**2 +
-                                                             (face_oneside_bef[j][i,1] - face_center_modified[:,1])**2) < 
-                                                    np.finfo(float).eps*1E5)[0]
+                                                              (face_oneside_bef[j][i,1] - face_center_modified[:,1])**2) < 
+                                                    TOL)[0]
         face_oneside_index_aft.append(face_oneside_index_aftj)
     
    
@@ -946,7 +1503,6 @@ def remesh_at_tip(gb, p, t, fracture, lmin, newfrac, gap):
              
     g2d.compute_geometry()
     return tip_prop, new_tip, split_face
-
 def mapping_solution(g2d, p, t, tips0, disp_cells, pres_cells, gap):
     import porepy as pp
     p2, t2 = adjustmesh(g2d, tips0, gap)
@@ -960,16 +1516,37 @@ def mapping_solution(g2d, p, t, tips0, disp_cells, pres_cells, gap):
                                 sum(disp_cells[concel,1]*mapping[ind,2])/sum(mapping[ind,2]) ])
         pres2[e] = sum(pres_cells[concel]*mapping[ind,2])/sum(mapping[ind,2])
     return disp2, pres2 
+def do_remesh_tip(p, t, lmin, fracture, tip, gap):
+    ''' 1. Refinement at new tips or new fracture
+        2. replace elements around new fracture by rosette elements, one face matchs with new fracture
+        3. define new faces-nodes, cells - faces '''
+    iniang = []
+    p, t, fn, cf, thetha  = rosette_element(p, t, fracture, tip, lmin, gap )
+    iniang = np.append(iniang, thetha)
+    return p, t, fn, cf, iniang
 def do_remesh(p, t, lmin, fracture, gap, newfrac = None):
     ''' 1. Refinement at new tips or new fracture
         2. replace elements around new fracture by rosette elements, one face matchs with new fracture
         3. define new faces-nodes, cells - faces '''
     tips, frac_pts, frac_edges = fracture_infor(fracture)
+    if len(fracture) == 2:
+        pt1 = fracture[0][0]; pt2 = fracture[0][-1]
+        segments = fracture[-1]
+        intpoi = intersectLines( pt1, pt2, segments )
+        if len(intpoi) > 0:
+            dis = np.sqrt((tips[:,0] - intpoi[0,0])**2 + (tips[:,1] - intpoi[0,1])**2)
+            index = np.where( dis == np.min(dis) )[0]
+            # index = np.where(dis <= np.finfo(float).eps*1E5)[0]
+            tips_actualy = np.delete(tips, index, axis = 0)
+        else:
+            tips_actualy = tips
+    else:
+        tips_actualy = tips
     iniang = []
     if newfrac is None:
         r = lmin
-        for i in range(tips.shape[0]):
-            tip = tips[i,:]
+        for i in range(tips_actualy.shape[0]):
+            tip = tips_actualy[i,:]
             p, t, fn, cf, thetha  = rosette_element(p, t, fracture, tip, r, gap )
             iniang = np.append(iniang, thetha)
     else:
@@ -984,12 +1561,14 @@ def rosette_element(p, t, fracture, tip, r, gap ):
     indfra = []
     for i in range(len(fracture)):
         ds = p2segment(p, fracture[i])
-        ind = np.where(ds < gap + np.finfo(float).eps*1e5)[0]
+        ind = np.where(ds < gap + TOL)[0]
         indfra = np.append(indfra, ind)
     indfra = np.int32( np.unique(indfra) )
 
     # define tip mouth index: tip index, p1 bellow index, p2 upper index
-    indtip = np.where(np.sqrt((p[:,0] - tip[0])**2 + (p[:,1] - tip[1])**2) < np.finfo(float).eps*1E5)[0]
+    dis2tip = np.sqrt((p[:,0] - tip[0])**2 + (p[:,1] - tip[1])**2)
+    indtip = np.where( dis2tip == np.min(dis2tip) )[0]
+    
     eleros = np.where(t == indtip)[0]
     indros = np.setdiff1d(np.unique(t[eleros,:]), indtip)
     indmou = np.intersect1d(indros, indfra)
@@ -1107,7 +1686,7 @@ def rosette_element(p, t, fracture, tip, r, gap ):
     pv2 = p[indoutdel,:]
     pv3 = prose[indoutrose,:]
     pv = np.concatenate((pv1,pv2,pv3), axis = 0)
-    inddel = np.where(np.sqrt(np.sum((pv[1:] - pv[:-1])**2, axis = 1)) < np.finfo(float).eps*1E5)[0]
+    inddel = np.where(np.sqrt(np.sum((pv[1:] - pv[:-1])**2, axis = 1)) < TOL)[0]
     pv = np.delete(pv,inddel,axis = 0) 
     # generate a grid bewtween elements's tip and pv   
     ptran, ttran = fillgap(pv) 
@@ -1165,10 +1744,10 @@ def fillgap(pv):
             d13 = p2segment(p13, pv)
             p23 = (pv[ti[1],:] + pv[ti[2],:])/2 ; p23 = p23.reshape(1,2)
             d23 = p2segment(p23, pv)               
-            if d13 > np.finfo(float).eps*1e5:
+            if d13 > TOL:
                 edgind = [ti[0], ti[2]]
    
-            if d23 > np.finfo(float).eps*1e5:
+            if d23 > TOL:
                 edgind = [ti[1], ti[2]]
                 
             i = i + 1
@@ -1178,10 +1757,10 @@ def fillgap(pv):
             d13 = p2segment(p13, pv)
             p23 = (pv[ti[1],:] + pv[ti[2],:])/2 ; p23 = p23.reshape(1,2)
             d23 = p2segment(p23, pv)   
-            if d13 > np.finfo(float).eps*1e5:
+            if d13 > TOL:
                 edgind = [ti[0], ti[2]]
                 
-            if d23 > np.finfo(float).eps*1e5:
+            if d23 > TOL:
                 edgind = [ti[1], ti[2]]
                 
             j = j + 1
@@ -1206,7 +1785,7 @@ def assemblymesh(p1, t1, p2, t2):
     duppoi[:,0] = np.arange(p1.shape[0]); count = 0
     for i in range(p1.shape[0]):
         dis = np.sqrt( (p1[i,0] - p2[:,0])**2 + (p1[i,1] - p2[:,1])**2 )
-        inddup = np.where(dis < np.finfo(float).eps*1E5)[0]
+        inddup = np.where(dis < TOL)[0]
         if len(inddup) > 0:
             duppoi[i,1] = 1; duppoi[i,2] = inddup
         else:
@@ -1250,7 +1829,13 @@ def divideelement(p, t, eleref, fracture, tips, gap):
     p, t = removeduplicatenode(p, t)
     poi, local = nodeedge(p, t)
     while len(local) != 0:
-        node_tip = p2index(p,tips)
+        node_tip = np.array([], dtype = np.int32)
+        for i in range(len(tips)):
+            tipi = tips[i]
+            dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+            node_tipi = np.where( dis2tip == np.min(dis2tip) )[0]
+            node_tip = np.append(node_tip,node_tipi)
+
         node_on_frac = np.array([], dtype = np.int32)
         for i in range(len(fracture)):
             node_on_frac = np.append(node_on_frac, p2index(p, fracture[i], gap))
@@ -1272,7 +1857,7 @@ def removeduplicatenode(p, t, gap = None):
     for k in range(p.shape[0],1,-1):
         pk = p[k-1,:]
         dis = np.sqrt( (p[:k-1,0] - pk[0])**2 + (p[:k-1,1] - pk[1])**2)
-        local = np.where(dis < gap + np.finfo(float).eps*1e7)[0]
+        local = np.where(dis < gap + TOL)[0]
         if len(local) != 0:
             index = np.append(index, np.array(([k-1, local[0]])).reshape(1,2), axis = 0)
             
@@ -1319,7 +1904,7 @@ def removehangingnode(p, t, poi, local, ele_no_remesh):
             pv = np.append(pv,pv[:1,:], axis = 0)
             ds = p2segment(pi.reshape(1,2), pv)
             dv = min((pi[0] - pv[:,0])**2 + (pi[1] - pv[:,1])**2)
-            if ds <= np.finfo(float).eps*1e5 and dv != 0:
+            if ds <= TOL and dv != 0:
                 if len(np.setdiff1d(e, ele_refined)) > 0:
                     ele_refined = np.append(ele_refined, e)
                     eledel = np.append(eledel, e)
@@ -1329,7 +1914,7 @@ def removehangingnode(p, t, poi, local, ele_no_remesh):
                     l02 = (p[t[e,0],0] - p[t[e,2],0])**2 + (p[t[e,0],1] - p[t[e,2],1])**2
                     l12 = (p[t[e,1],0] - p[t[e,2],0])**2 + (p[t[e,1],1] - p[t[e,2],1])**2
                     if len(np.setdiff1d(e, ele_no_remesh)) > 0:  
-                        if d01 <= np.finfo(float).eps*1e5:
+                        if d01 <= TOL:
                             if l01 >= max(l02,l12):
                                 te = np.array(([[local[i], t[e,2], t[e,0]],
                                                 [local[i], t[e,1], t[e,2]]]))
@@ -1352,7 +1937,7 @@ def removehangingnode(p, t, poi, local, ele_no_remesh):
                                 tnew = np.append(tnew,te,axis = 0)
                                 pnew = np.append(pnew,pe,axis = 0)
                                 cou = cou + 1 
-                        elif d02 <= np.finfo(float).eps*1e5:
+                        elif d02 <= TOL:
                             if l02 >= max(l01,l12):
                                 te = np.array(([[local[i], t[e,0], t[e,1]],
                                                 [local[i], t[e,1], t[e,2]]]))
@@ -1400,11 +1985,11 @@ def removehangingnode(p, t, poi, local, ele_no_remesh):
                                 cou = cou + 1
                         break
                     else: # len(np.setdiff1d(e, ele_no_remesh)) = 0: # element connect with a fracture's face
-                        if d01 <= np.finfo(float).eps*1e5:
+                        if d01 <= TOL:
                             te = np.array(([[local[i], t[e,2], t[e,0]],
                                             [local[i], t[e,1], t[e,2]]]))
                             tnew = np.append(tnew,te,axis = 0)
-                        elif d02 <= np.finfo(float).eps*1e5:
+                        elif d02 <= TOL:
                             te = np.array(([[local[i], t[e,0], t[e,1]],
                                             [local[i], t[e,1], t[e,2]]]))
                             tnew = np.append(tnew,te,axis = 0)
@@ -1429,7 +2014,7 @@ def removeduplicateelement(p, t):
             xci = xc[i,:]
             for j in range(i+1,xc.shape[0]):
                 xcj = xc[j,:]
-                if abs(xci[0] - xcj[0]) < np.finfo(float).eps*1e5 and abs(xci[1] - xcj[1]) < np.finfo(float).eps*1e5:
+                if abs(xci[0] - xcj[0]) < TOL and abs(xci[1] - xcj[1]) < TOL:
                     eledel.append(j)
         t = np.delete(t,eledel, axis = 0) 
     return t
@@ -1441,7 +2026,7 @@ def nodeedge(p, t):
         pv = p[t[e,:],:]
         pv = np.append(pv,pv[:1,:], axis = 0)
         ds = p2segment(p, pv)
-        ind = np.where(ds < np.finfo(float).eps*1e5)[0]
+        ind = np.where(ds < TOL)[0]
         if len(ind) > 3:
             indp = np.setdiff1d(ind,t[e,:])
             poi = np.append(poi,p[indp,:].reshape(len(indp),2), axis = 0)
@@ -1453,7 +2038,7 @@ def smoothing(p, t, nodfix):
     """ Smooth a mesh by using the Laplacian smoothing"""
     nodall = np.int32([i for i in range(p.shape[0])])
     nodche = np.setdiff1d(nodall,nodfix)
-    for j in range(2):
+    for j in range(3):
         for i in range(len(nodche)):
             nodmov = p[nodche[i],:]
             elearo = np.where(t == nodche[i])[0]
@@ -1478,8 +2063,25 @@ def smoothing(p, t, nodfix):
     Fracture analysis 
     
 ################################'''
+# initial_fracture = self.initial_fracture
+# max_pro = self.min_face
+# gap = self.GAP
+# p, t = self.p, self.t
+def evaluate_propagation_small(material, p_small, t_small, frac_small, tipi, p, t, disp_cells, initial_fracture, max_pro, gap):
+    dispnod =  NN_recovery( disp_cells, p, t)
+    pref, tref, fn, cf, iniang = do_remesh_tip(p_small, t_small, max_pro, frac_small, tipi, gap)
+    # p6, t6, qpe = t3tot6(pref, tref, tipi)
+    p6, t6, qpe = t3tot6_small(pref, tref, tipi)
+    disp = solution(material, p6, t6, qpe, p, t, dispnod, initial_fracture, gap)
+    
+    Gi, ki, keq, craang = SIF(p6, t6, disp, material['YOUNG'],  material['POISSON'], qpe )
 
-def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture, tips, max_pro, dispnod, gap):
+    return Gi, ki, keq, craang, iniang
+
+
+def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture, tips, max_pro, disp_cell, gap):
+    dispnod =  NN_recovery( disp_cell, p, t)
+    
     pref, tref, fn, cf, iniang = do_remesh(pref, tref, max_pro, fracture, gap)
     
     p6, t6, qpe = t3tot6(pref, tref, tips)
@@ -1506,29 +2108,30 @@ def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture,
     if len(newfrac) > 0:
         for i in range(len(newfrac)):
             tipold = newfrac[i][0,:]
-            index = np.where(np.sqrt((tips0[:,0] - tipold[0])**2 + (tips0[:,1] - tipold[1])**2) < np.finfo(float).eps)[0]
+            index = np.where(np.sqrt((tips0[:,0] - tipold[0])**2 + (tips0[:,1] - tipold[1])**2) < TOL)[0]
             tips0[index,:] = newfrac[i][1,:]
-    return keq, newfrac, tips0, p6, t6, disp
+    return keq, ki, newfrac, tips0, p6, t6, disp
 
 def solution(material, p, t, qpe, p1, t1, sol1, initial_fracture, gap):
     D = material['YOUNG']/(1 - material['POISSON']**2)*np.array(([[1, material['POISSON'], 0],
                                                                   [material['POISSON'], 1, 0],
                                                                   [0, 0, (1 - material['POISSON'])/2]]), dtype = float)
-
+    # tol = np.min(np.sqrt(np.sum( np.concatenate((p[t[:,0],:] - p[t[:,2],:], p[t[:,0],:] - p[t[:,4],:], p[t[:,2],:] - p[t[:,4],:]), axis = 0)**2, axis = 1)))/8
+    tol = np.copy(gap)
     # sol1 from grid p1, t1
     # find sol2 (displacement) of grid p, t
     sol2 = linear_interpolation(p1,t1,sol1,p)
     
-    cbl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    cbr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == min(p[:,1]))[0])[0]
-    ctl = np.intersect1d(np.where(p[:,0] == min(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
-    ctr = np.intersect1d(np.where(p[:,0] == max(p[:,0]))[0], np.where(p[:,1] == max(p[:,1]))[0])[0]
+    cbl = np.intersect1d(np.where(p[:,0] < np.min(p[:,0]) + tol)[0], np.where(p[:,1] < np.min(p[:,1]) + tol)[0])[0]
+    cbr = np.intersect1d(np.where(p[:,0] > np.max(p[:,0]) - tol)[0], np.where(p[:,1] < np.min(p[:,1]) + tol)[0])[0]
+    ctl = np.intersect1d(np.where(p[:,0] < np.min(p[:,0]) + tol)[0], np.where(p[:,1] > np.max(p[:,1]) - tol)[0])[0]
+    ctr = np.intersect1d(np.where(p[:,0] > np.max(p[:,0]) - tol)[0], np.where(p[:,1] > np.max(p[:,1]) - tol)[0])[0]
     nodaro = p[[cbl, cbr, ctr, ctl, cbl],:]
 
     indfra = []
     for i in range(len(initial_fracture)):
         ds = p2segment(p, initial_fracture[i])
-        ind = np.where(ds < gap + np.finfo(float).eps*1e5)[0]
+        ind = np.where(ds < gap + TOL)[0]
         indfra = np.append(indfra, ind)
     indfra = np.int32( np.unique(indfra) )
 
@@ -1540,15 +2143,23 @@ def solution(material, p, t, qpe, p1, t1, sol1, initial_fracture, gap):
 
     
     dirdof = np.concatenate((indfra*2, indfra*2 + 1, 
-                             topind*2, topind*2 + 1, 
-                             botind*2, botind*2 + 1,
-                             lefind*2, lefind*2 + 1, 
-                             rigind*2, rigind*2 + 1), axis = 0)
+                              topind*2, topind*2 + 1, 
+                              botind*2, botind*2 + 1,
+                              lefind*2, lefind*2 + 1, 
+                              rigind*2, rigind*2 + 1), axis = 0)
     dirval = np.concatenate((sol2[indfra,0], sol2[indfra,1], 
-                             sol2[topind,0], sol2[topind,1], 
-                             sol2[botind,0], sol2[botind,1],
-                             sol2[lefind,0], sol2[lefind,1], 
-                             sol2[rigind,0], sol2[rigind,1],), axis = 0)
+                              sol2[topind,0], sol2[topind,1], 
+                              sol2[botind,0], sol2[botind,1],
+                              sol2[lefind,0], sol2[lefind,1], 
+                              sol2[rigind,0], sol2[rigind,1],), axis = 0)
+    # dirdof = np.concatenate((topind*2, topind*2 + 1, 
+    #                          botind*2, botind*2 + 1,
+    #                          lefind*2, lefind*2 + 1, 
+    #                          rigind*2, rigind*2 + 1), axis = 0)
+    # dirval = np.concatenate((sol2[topind,0], sol2[topind,1], 
+    #                          sol2[botind,0], sol2[botind,1],
+    #                          sol2[lefind,0], sol2[lefind,1], 
+    #                          sol2[rigind,0], sol2[rigind,1],), axis = 0)
     lefhs = stiffness( p, t, D, qpe) 
     # righs = loadtraction(p, t, tradof, traval)
     righs = loadtraction(p, t, tradof = None, traval = None)
@@ -1580,7 +2191,8 @@ def t3tot6(p, t, tips = None):
     if tips is not None:
         for i in range(tips.shape[0]):
             tipi = tips[i,:]
-            tipind = np.where(np.sqrt((p6[:,0] - tipi[0])**2 + (p6[:,1] - tipi[1])**2) < np.finfo(float).eps)[0]
+            dis2tip = np.sqrt((p[:,0] - tipi[0])**2 + (p[:,1] - tipi[1])**2)
+            tipind = np.where(dis2tip == np.min(dis2tip))[0] 
             qpei = np.int32(np.where(t6 == tipind)[0])               
             p6[t6[qpei,1],0] = 3/4*p6[t6[qpei,0],0] + 1/4*p6[t6[qpei,2],0]
             p6[t6[qpei,1],1] = 3/4*p6[t6[qpei,0],1] + 1/4*p6[t6[qpei,2],1]    
@@ -1588,7 +2200,36 @@ def t3tot6(p, t, tips = None):
             p6[t6[qpei,5],1] = 3/4*p6[t6[qpei,0],1] + 1/4*p6[t6[qpei,4],1]   
             qpe.append(qpei)
     return p6, t6, qpe
-
+def t3tot6_small(p, t, tipi):
+    """ Determine a mesh including triangles of 6 nodes"""
+    edge = np.concatenate((t[:,[0,1]],t[:,[0,2]],t[:,[1,2]]), axis=0)
+    edge = np.sort(edge, axis = 1)
+    edge = np.unique(edge, axis = 0)
+    
+    facecenx = (p[edge[:,0],0] + p[edge[:,1],0])/2
+    faceceny = (p[edge[:,0],1] + p[edge[:,1],1])/2
+    facecen = np.concatenate((facecenx.reshape(len(facecenx),1), faceceny.reshape(len(faceceny),1)), axis = 1)
+    midnode = [i for i in range(p.shape[0],p.shape[0] + edge.shape[0])]
+    midnode = np.array(midnode)
+    t6 = np.empty((t.shape[0],6), np.int32)
+    for e in range(t.shape[0]):
+        edgee1 = np.unique(t[e,[0,1]])
+        edgee2 = np.unique(t[e,[1,2]])
+        edgee3 = np.unique(t[e,[0,2]])
+        id1 = np.intersect1d(np.where(edgee1[0] == edge[:,0])[0], np.where(edgee1[1] == edge[:,1])[0])
+        id2 = np.intersect1d(np.where(edgee2[0] == edge[:,0])[0], np.where(edgee2[1] == edge[:,1])[0])
+        id3 = np.intersect1d(np.where(edgee3[0] == edge[:,0])[0], np.where(edgee3[1] == edge[:,1])[0])
+        t6[e,:] = np.array([t[e,0], midnode[id1][0], t[e,1], midnode[id2][0], t[e,2], midnode[id3][0]],np.int32)
+    p6 = np.concatenate((p,facecen), axis = 0)
+    qpe = []
+    tipind = np.where(np.sqrt((p6[:,0] - tipi[0])**2 + (p6[:,1] - tipi[1])**2) < TOL)[0]
+    qpei = np.int32(np.where(t6 == tipind)[0])               
+    p6[t6[qpei,1],0] = 3/4*p6[t6[qpei,0],0] + 1/4*p6[t6[qpei,2],0]
+    p6[t6[qpei,1],1] = 3/4*p6[t6[qpei,0],1] + 1/4*p6[t6[qpei,2],1]    
+    p6[t6[qpei,5],0] = 3/4*p6[t6[qpei,0],0] + 1/4*p6[t6[qpei,4],0]
+    p6[t6[qpei,5],1] = 3/4*p6[t6[qpei,0],1] + 1/4*p6[t6[qpei,4],1]   
+    qpe.append(qpei)
+    return p6, t6, qpe
 def stiffness(p6, t6, material, qpe):
     CQPE = []
     for i in range(len(qpe)):
@@ -1912,7 +2553,7 @@ def SIF(p6, t6, disp, young, poisson, qpe ):
         x2 = 0; y2 = 0;
         x3 = O[0] - B[0]; y3 = O[1] - B[1];
         d0 = (x2 - x1)*(y3 - y1) - (y2 - y1)*(x3 - x1)
-        if abs(ang) > np.finfo(float).eps*1000 and abs(abs(ang) - np.pi) > np.finfo(float).eps*1000:
+        if abs(ang) > TOL and abs(abs(ang) - np.pi) > TOL:
             angle0 = 2*np.pi - np.sign(d0)*ang
         else:
             angle0 = ang
@@ -1934,9 +2575,9 @@ def SIF(p6, t6, disp, young, poisson, qpe ):
         if d2s1 >= 0 and d2s2 >= 0:
             thetha = 0
         elif d2s1 < 0:
-            thetha = np.sign(ang1)*min(35*np.pi/180,abs(ang1))
+            thetha = np.sign(ang1)*min(70*np.pi/180,abs(ang1))
         else:
-            thetha = np.sign(ang2)*min(35*np.pi/180,abs(ang2))
+            thetha = np.sign(ang2)*min(70*np.pi/180,abs(ang2))
         c11 = 3/4*np.cos(thetha/2) + 1/4*np.cos(3*thetha/2)
         c12 = -3/4*np.sin(thetha/2) - 3/4*np.sin(3*thetha/2)
         c21 = 1/4*np.sin(thetha/2) + 1/4*np.sin(3*thetha/2)
@@ -2063,7 +2704,7 @@ def gausspoint(N, Ele):
     
     L = np.zeros((N1,N2))
     y0 = 2
-    while (abs(y-y0)).max(0) > np.finfo(float).eps:
+    while (abs(y-y0)).max(0) > TOL:
         L[:,0] = 1
         L[:,1] = y
         for k in range(2,N1+1):
@@ -2111,4 +2752,4 @@ def gausspoint(N, Ele):
             poi[i*(N+1):i*(N+1) + (N+1),1] = x1d[i]
             wei = np.dot(w1d,np.transpose(w1d))
             wei = np.ravel(np.transpose(wei))
-    return poi, wei           
+    return poi, wei                   

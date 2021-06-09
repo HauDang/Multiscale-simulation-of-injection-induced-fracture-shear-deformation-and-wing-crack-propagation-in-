@@ -1,5 +1,3 @@
-
-
 from IPython import get_ipython
 get_ipython().magic('reset -sf') 
 import time
@@ -19,30 +17,34 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         
         # ok
         self.mesh_size = 0.005*self.length_scale*2
-        self.mesh_args = { "mesh_size_frac": self.mesh_size, "mesh_size_min": 1 * self.mesh_size, "mesh_size_bound": 1/10} 
+        self.mesh_args = { "mesh_size_frac": self.mesh_size, "mesh_size_min": 1 * self.mesh_size, "mesh_size_bound": 1/10*self.length_scale} 
         
 
         self.box = {"xmin": 0, "ymin": 0, "xmax": 1*self.length_scale, "ymax": 1*self.length_scale}  
         xcen =  (self.box['xmin'] + self.box['xmax'])/2
         ycen =  (self.box['ymin'] + self.box['ymax'])/2
-        lenfra = 0.15
+        lenfra = 0.1*self.length_scale
         self.length_initial_fracture = lenfra
         
-        fracture1 = np.array([[xcen - lenfra/2, ycen],
-                              [xcen + lenfra/2, ycen]])
+        # fracture1 = np.array([[xcen - lenfra/2, ycen],
+        #                       [xcen + lenfra/2, ycen]])
+        phi = np.pi/4
+        fracture1 = np.array([[xcen - lenfra/2*np.cos(phi), ycen - lenfra/2*np.sin(phi)],
+                              [xcen + lenfra/2*np.cos(phi), ycen + lenfra/2*np.sin(phi)]]) 
+
 
         self.fracture = np.array([fracture1])
 
         self.initial_fracture = self.fracture.copy()
-        self.GAP = 1e-3*self.length_scale
+        self.GAP = 1.1e-4*self.length_scale
  
         self.tips, self.frac_pts, self.frac_edges = analysis.fracture_infor(self.fracture)
-        self.initial_aperture = 1e-3*self.length_scale
+        self.initial_aperture = 1.00e-4*self.length_scale
         
         # Time seconds       
         self.end_time = 1*60*60 + 60
-        self.time_step = 60
-        self.time_step_fix = 60
+        self.time_step = 60*1/2
+        self.time_step_fix = 60*1/2
                 
         self.glotim = []
 
@@ -76,26 +78,26 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.POISSON = 0.2
         self.BIOT = 0.8
         self.POROSITY = 1E-2
-        self.COMPRESSIBILITY = 4.0E-10
-        self.PERMEABILITY = 1e-18
-        self.VISCOSITY = 1E-3
+        self.COMPRESSIBILITY = 4.4E-10
+        self.PERMEABILITY = 1.0e-20
+        self.VISCOSITY = 1.0E-4
         self.FRICTION = 0.5
-        self.FLUID_DENSITY = 1E3*0
+        self.FLUID_DENSITY = 930*0
         self.ROCK_DENSITY = 2.7E3*0
 
-        self.INJECTION = 1.35E-12/self.length_initial_fracture/self.initial_aperture*0
-        self.SIG = 5E6/self.box['ymax']*np.sqrt(self.length_scale)*0
-        self.TAU = 800E4/self.box['ymax']*np.sqrt(self.length_scale)*0
+        self.INJECTION = 5e-10*self.length_scale**2 #( m2/s)
+        self.SH = 10E4
+        self.Sh = 1E3
 
         self.BULK = self.YOUNG/3/(1 - 2*self.POISSON)
         self.LAMBDA = self.YOUNG*self.POISSON / ((1 + self.POISSON) * (1 - 2 * self.POISSON))
         self.MU = self.YOUNG/ (2 * (1 + self.POISSON))
-        self.material = dict([('YOUNG', self.YOUNG), ('POISSON', self.POISSON), ('KIC', 1.0E6) ])      
+        self.material = dict([('YOUNG', self.YOUNG), ('POISSON', self.POISSON), ('KIC', 5e4) ])      
     def porosity(self, g) -> float:
         if g.dim == 2:
             return self.POROSITY
         else:
-            return 0.05
+            return 0.1
     def biot_alpha(self, g) -> np.ndarray:
         if g.dim == 2:
             return self.BIOT
@@ -212,11 +214,11 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             mg: pp.MortarGrid = d["mortar_grid"]
             pp.initialize_data(mg, d, self.mechanics_parameter_key)
 
-    def set_scalar_parameters(self) -> None:
+    def set_scalar_parameters(self):
         for g, d in self.gb:
             bc = self._bc_type_scalar(g)
             bc_values = self._bc_values_scalar(g)
-            source_values = self._source_scalar(g)
+            source_values = self.source_scalar(g)
             specific_volume = self.specific_volume(g)
             alpha = self.biot_alpha(g)
             if g.dim == 2:
@@ -311,14 +313,17 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
 
         return Fm
 
-    def _source_scalar(self, g):
+    def source_scalar(self, g):
         values = np.zeros(g.num_cells)
-        if g.dim == 1 and self.inj_cri:
+        # if g.dim == 1 and self.inj_cri: #(self.time >= 20*60 and self.time <= 90*60) and 
+        if g.dim == 1 and self.time <= 20*60: 
+            print('injection')
             frac1 = self.initial_fracture[0]
             poix = (g.cell_centers[0,:] <= np.max(frac1[:,0])) * (g.cell_centers[0,:] >= np.min(frac1[:,0]))
             poiy = (g.cell_centers[1,:] <= np.max(frac1[:,1]) + self.initial_aperture) * (g.cell_centers[1,:] >= np.min(frac1[:,1]) - self.initial_aperture)
             inject =  poix*poiy
-            values[inject] = self.INJECTION*self.time_step *g.cell_volumes[inject]
+            qeq = self.INJECTION/self.length_initial_fracture/self.initial_aperture #(1/s)
+            values[inject] = qeq*self.time_step*g.cell_volumes[inject]*self.initial_aperture #(inter)
         return values
 
     def create_grid(self):
@@ -342,15 +347,15 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
     def _bc_type_mechanics(self, g):
         # dir = displacement 
         # neu = traction
+        A = [self.box['xmin'], (self.box['xmax'] + self.box['ymin'])/2]
+        dis = np.sqrt((g.face_centers[0,:] - A[0])**2 + (g.face_centers[1,:] - A[1])**2)
+        faceA = dis == np.min(dis)
+        
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
         bc = pp.BoundaryConditionVectorial(g)
-        
-        if self.time == 0:
-            bc.is_dir[1, north] = True
-        else:
-            bc.is_neu[:, north] = True
-              
-        bc.is_dir[:, south] = True
+
+        bc.is_dir[0, west] = True
+        bc.is_dir[1, south] = True
         
         frac_face = g.tags["fracture_faces"]
         bc.is_dir[:, frac_face] = True
@@ -360,20 +365,48 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         # Set the boundary values
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
         values = np.zeros((g.dim, g.num_faces))
-        if self.time == 0:
-            values[1, north] = 1E-3
+
+        values[1, north] = -self.Sh*g.face_areas[north]
+        # values[1, south] = self.Sh*g.face_areas[south]
+        values[0, east] = -self.SH*g.face_areas[east]
+        # values[0, west] = self.SH*g.face_areas[east]
 
         return values.ravel("F")
     def _bc_type_scalar(self, g):
         bc = pp.BoundaryCondition(g)
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
-        bc.is_dir[north] = True
+        bc.is_neu[east] = True
+        bc.is_neu[west] = True
+        bc.is_neu[north] = True
+        bc.is_neu[south] = True
         return bc
 
     def _bc_values_scalar(self, g):
         bc_values = np.zeros(g.num_faces)
         all_bf, east, west, north, south, top, bottom = self.domain_boundary_sides(g)
         return bc_values
+    
+    def initial_condition(self):
+        """
+        Initial guess for Newton iteration, scalar variable and bc_values (for time
+        discretization).
+        """
+        super().initial_condition()
+
+        for g, d in self.gb:
+            # Initial value for the scalar variable.
+            initial_scalar_value = np.zeros(g.num_cells)
+            d[pp.STATE].update({self.scalar_variable: initial_scalar_value})
+            if g.dim == self.Nd:
+                bc_values = self.bc_values_mechanics(g)
+                mech_dict = {"bc_values": bc_values}
+                d[pp.STATE].update({self.mechanics_parameter_key: mech_dict})
+
+        for _, d in self.gb.edges():
+            mg = d["mortar_grid"]
+            initial_value = np.zeros(mg.num_cells)
+            d[pp.STATE][self.mortar_scalar_variable] = initial_value
+            
     def after_newton_convergence(self, solution, errors, iteration_counter):
         """Propagate fractures if relevant. Update variables and parameters
         according to the newly calculated solution.
@@ -560,6 +593,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         if self.pro_cri:
             lenfac = np.sqrt(np.sum((newfrac[0][1,:] - newfrac[0][0,:])**2))
             self.lenfra.append(lenfac)
+            self.inj_cri = False
         else:
             self.lenfra.append(0)
         if self.inj_cri:
@@ -615,7 +649,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
                         frac_small = np.array( [np.concatenate( (intpoi, fracturej[insbox,:]), axis = 0)] )
                 if frac_box:        
                     tips_small, frac_pts_small, frac_edges_small = analysis.fracture_infor(frac_small)
-                    mesh_args = { "mesh_size_frac": self.mesh_size, "mesh_size_min": 1 * self.mesh_size, "mesh_size_bound": 1 * self.mesh_size}
+                    mesh_args = { "mesh_size_frac": self.mesh_size, "mesh_size_min": 1 * self.mesh_size, "mesh_size_bound": 2 * self.mesh_size}
                     network_small = pp.FractureNetwork2d( frac_pts_small.T, frac_edges_small.T, domain=box_small )
                     gb_small = network_small.mesh(mesh_args)   
                     pp.contact_conditions.set_projections(gb_small)
@@ -632,7 +666,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
                     
         ladv = np.zeros(tips.shape[0])
         pos_pro = []
-        if np.min(np.abs(keq)) >= self.material['KIC']:
+        if np.max(np.abs(keq)) >= self.material['KIC']:
             pos_pro = np.where(np.abs(keq)*1.1 >= self.material['KIC'])[0]
         
         if len(pos_pro) > 0:
@@ -836,7 +870,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
       
     def adjust_time_step(self):
         if self.pro_cri:
-            self.time_step = self.time_step_fix/2000
+            self.time_step = self.time_step_fix/20
         else:
             self.time_step = self.time_step_fix
         
@@ -862,16 +896,17 @@ while setup.time < setup.end_time:
     k+= 1
     setup.time += setup.time_step
     
-k = k-1
-p = setup.nodcoo[k]
-t = setup.celind[k]
-face = setup.facind[k]
-disp_nodes =  analysis.NN_recovery( setup.stored_disp[k], p, t)
-pres_nodes =  analysis.NN_recovery( setup.stored_pres[k], p, t)
+kk = k-1
+p = setup.nodcoo[kk]
+t = setup.celind[kk]
+face = setup.facind[kk]
+disp_nodes =  analysis.NN_recovery( setup.stored_disp[kk], p, t)
+pres_nodes =  analysis.NN_recovery( setup.stored_pres[kk], p, t)
 # frac = np.concatenate((setup.farcoo[k][0], setup.farcoo[k][1]), axis = 0)
-frac = setup.farcoo[k][0]
-analysis.trisurf( p + disp_nodes*1e4, t, fn = None, point = None, value = setup.stored_pres[k], infor = None)
+frac = setup.farcoo[kk][0]
+analysis.trisurf( p + disp_nodes*1e2, t, fn = None, point = None, value = setup.stored_pres[kk], vmin = None, vmax = None, infor = None)
 
-disp = np.sqrt( setup.stored_disp[k][:,0]**2 +  setup.stored_disp[k][:,1]**2)
+disp = np.sqrt( setup.stored_disp[kk][:,0]**2 +  setup.stored_disp[kk][:,1]**2)
 # disp = setup.stored_disp[k][:,1]
-analysis.trisurf( p + disp_nodes*1e2, t, fn = None, point = None, value = disp, infor = None)
+analysis.trisurf( p + 0*disp_nodes*1e3, t, fn = None, point = frac, value = disp, vmin = None, vmax = None, infor = None)
+

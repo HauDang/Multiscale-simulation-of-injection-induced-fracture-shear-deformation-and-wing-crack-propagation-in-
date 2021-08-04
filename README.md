@@ -1,11 +1,9 @@
-# Fracture propagation (FP) accounting for contact mechanics (CM) in porous media (PM) (developing)
-Numerical solution for coupling fluid flow and fracture propagation in porous media due to fluid injection
+# Multiscale simulation of injection-induced fracture shear-deformation and wing-crack propagation in poroelastic media
 
-1. Using a finite volume - finite element framework
-2. Refinement and remeshing at tips
-3. Splitting a face to create a new fracture
-4. Running nonlinear, time-dependent on model
-5. Mapping solution between different grids
+•	Multiscale simulation of fracture slip and propagation caused by fluid injection in poroelastic, fractured media.
+•	Quasi-static micro-scale simulations of fracture propagation combined with macro-scale simulation of flow and deformation of fractured poroelastic media. 
+•	Open-source 2D implementation, including local adaptive remeshing on the micro and macroscale. 
+•	Control volume methods for macro-scale Poroelasticity and contact mechanics combined with finite-element simulation of fracture propagation.
 
 To run the examples contained in this repository a working version of PorePy (Version 1.3.0) must be installed on the computer.
 The PorePy install requires installations of further packages, see Install instructions in the PorePy repository.

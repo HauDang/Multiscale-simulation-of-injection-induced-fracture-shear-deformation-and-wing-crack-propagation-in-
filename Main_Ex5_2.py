@@ -503,7 +503,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             for i in range(tips_small.shape[0]):
                 newfrac.append( np.array([tips[i], tips[i]]) )
             while pro_step <= self.esp_m - 1:
-                keq, ki, newfrac, fracture_small = self.propagation_small_scale( fracture_small, newfrac, tips, disp_cells, self.QPE )
+                keq, ki, newfrac, fracture_small = self.propagation_small_scale( fracture_small, newfrac, tips, disp_cells, pres_cells, self.QPE )
                 print(keq)
                 pro_step = pro_step + 1
                 if np.max(np.abs(keq)) < self.material['KIC']:
@@ -523,7 +523,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             
             keq, ki, newfrac, tip_update, p6, t6, disp6 = analysis.evaluate_propagation(self.material, pref, tref, self.p, self.t, 
                                                                                    self.initial_fracture, self.fracture, tips_actualy, 
-                                                                                   self.min_face, disp_cells, self.GAP, self.QPE)
+                                                                                   self.min_face, disp_cells, pres_cells, self.GAP, self.QPE)
             print(keq)
         
         # endtime = time.time()   
@@ -687,7 +687,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         
         
         return
-    def propagation_small_scale(self, fracture_small, newfrac, tips, disp_cells, QPE):    
+    def propagation_small_scale(self, fracture_small, newfrac, tips, disp_cells, pres_cells, QPE):    
         kk = 0
         tips_small = np.copy(tips)
         for j, fracturej in enumerate(fracture_small):
@@ -810,17 +810,15 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
                 p_small, t_small = p0, t0
                 
                 sol1 = analysis.NN_recovery( disp_cells, self.p, self.t)                    
-                sol2 = analysis.linear_interpolation(self.p,self.t, sol1, p_small)
-                # analysis.trisurf(p_small + 5e2*sol2, t_small, value = sol2[:,0].reshape(p_small.shape[0],1))
-                # valnod = inter.griddata(self.pc, disp_cells, p_small, method = 'cubic')
-                # valnod[frac_nod,:] = sol2[frac_nod,:]
+                dispnod = analysis.linear_interpolation(self.p,self.t, sol1, p_small)
                 
-                valnod = sol2
+                sol2 = analysis.NN_recovery( pres_cells, self.p, self.t)                    
+                presnod = analysis.linear_interpolation(self.p,self.t, sol2, p_small)
 
                 # p_small, t_small = analysis.adjustmesh(g2d_small, tips_small, 1E-3)  
 
                 Gi, sifi, keqi, craangi, iniangi = analysis.evaluate_propagation_small(self.material, p_small, t_small, frac_small, tipi, 
-                                                                                   self.p, self.t, valnod, self.initial_fracture, self.fra_increment, 1E-3, QPE)
+                                                                                   self.p, self.t, dispnod, presnod, self.initial_fracture, self.fra_increment, 1E-3, QPE)
                 G = np.append(G, Gi); 
                 keq = np.append(keq, keqi); 
                 ki.append(sifi[0]); 

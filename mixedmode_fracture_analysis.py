@@ -1874,13 +1874,13 @@ def splitelement( p, t, fracture, newfrac, gap, solution = None ):
 # max_pro = self.min_face
 # gap = self.GAP
 # p, t = self.p, self.t
-def evaluate_propagation_small(material, p_small, t_small, frac_small, tipi, p, t, dispnod, initial_fracture, max_pro, gap, QPE):
+def evaluate_propagation_small(material, p_small, t_small, frac_small, tipi, p, t, dispnod, presnod, initial_fracture, max_pro, gap, QPE):
     # dispnod =  NN_recovery( disp_cells, p, t)
     pref, tref, fn, cf, iniang = do_remesh_tip(p_small, t_small, max_pro, frac_small, tipi, gap)
     # p6, t6, qpe = t3tot6(pref, tref, tipi)
     p6, t6, qpe = t3tot6_small(pref, tref, tipi, QPE)
     
-    disp = solution(material, p6, t6, qpe, p_small, t_small, dispnod, initial_fracture, gap, QPE)
+    disp = solution(material, p6, t6, qpe, p_small, t_small, dispnod, presnod, initial_fracture, gap, QPE)
     
     # disp_nodes =  disp.reshape((p6.shape[0],2))
     # trisurf( p6 + disp_nodes*1e1, t6) 
@@ -1890,13 +1890,14 @@ def evaluate_propagation_small(material, p_small, t_small, frac_small, tipi, p, 
     return Gi, ki, keq, craang, iniang, 
 
 
-def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture, tips, max_pro, disp_cell, gap, QPE):
+def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture, tips, max_pro, disp_cell, pres_cell, gap, QPE):
     dispnod =  NN_recovery( disp_cell, p, t)
+    presnod =  NN_recovery( pres_cell, p, t)
     
     pref, tref, fn, cf, iniang = do_remesh(pref, tref, max_pro, fracture, gap)
     
     p6, t6, qpe = t3tot6(pref, tref, tips, QPE)
-    disp = solution(material, p6, t6, qpe, p, t, dispnod, initial_fracture, gap, QPE)
+    disp = solution(material, p6, t6, qpe, p, t, dispnod, presnod, initial_fracture, gap, QPE)
     
     Gi, ki, keq, craang = SIF(p6, t6, disp, material['YOUNG'],  material['POISSON'], qpe, QPE )
     ladv = np.zeros(tips.shape[0])
@@ -1923,7 +1924,7 @@ def evaluate_propagation(material, pref, tref, p, t, initial_fracture, fracture,
             tips0[index,:] = newfrac[i][1,:]
     return keq, ki, newfrac, tips0, p6, t6, disp
 
-def solution(material, p, t, qpe, p1, t1, sol1, initial_fracture, gap, QPE):
+def solution(material, p, t, qpe, p1, t1, dispnod, presnod, initial_fracture, gap, QPE):
     D = material['YOUNG']/(1 - material['POISSON']**2)*np.array(([[1, material['POISSON'], 0],
                                                                   [material['POISSON'], 1, 0],
                                                                   [0, 0, (1 - material['POISSON'])/2]]), dtype = float)
@@ -1932,7 +1933,8 @@ def solution(material, p, t, qpe, p1, t1, sol1, initial_fracture, gap, QPE):
     tol = np.copy(gap)
     # sol1 from grid p1, t1
     # find sol2 (displacement) of grid p, t
-    sol2 = linear_interpolation(p1,t1,sol1,p)
+    sol2 = linear_interpolation(p1,t1,dispnod,p)
+    presnod_2 = linear_interpolation(p1,t1,presnod,p)
     
     cbl = np.intersect1d(np.where(p[:,0] < np.min(p[:,0]) + tol)[0], np.where(p[:,1] < np.min(p[:,1]) + tol)[0])[0]
     cbr = np.intersect1d(np.where(p[:,0] > np.max(p[:,0]) - tol)[0], np.where(p[:,1] < np.min(p[:,1]) + tol)[0])[0]
@@ -1984,12 +1986,13 @@ def solution(material, p, t, qpe, p1, t1, sol1, initial_fracture, gap, QPE):
         qpe_fem = qpe
     else:
         qpe_fem = []
-    lefhs = stiffness( p, t, D, qpe_fem) 
+    lefhs, Q = stiffness( p, t, D, qpe_fem) 
     # righs = loadtraction(p, t, tradof, traval)
-    righs = loadtraction(p, t, tradof = None, traval = None)
+    righs = loadtraction(p, t, tradof = None, traval = None) - 0.8*np.dot(Q,presnod_2)
     disp = linearsolver(lefhs,righs,dirdof,dirval, p.shape[0]*2)
     # dis2d = disp.reshape(p.shape[0], 2)
     # trisurf(p + 5e2*dis2d, t, value = dis2d[:,0].reshape(p.shape[0],1))
+    # trisurf(p + 5e2*dis2d, t, value = presnod_2)
     return disp
 def FEM_solution(material, p, t, qpe, bc_type, bc_value):
     D = material['YOUNG']/(1 - material['POISSON']**2)*np.array(([[1, material['POISSON'], 0],
@@ -2096,9 +2099,13 @@ def stiffness(p6, t6, material, qpe):
     poi4, wei4 = gausspoint(7, 'Q4')
     ne = t6.shape[0]
     sdof = p6.shape[0]*2
+    sdof_f = p6.shape[0]
     edof = 12
+    edof_f = 6
+    m = np.array([[1], [1], [0]])
     # K = scipy.sparse.csr_matrix((sdof,sdof))
     K = np.zeros((sdof,sdof), dtype = float)
+    Q = np.zeros((sdof,sdof_f), dtype = float)
     for e in range(ne):
         if len(material) == 3:
             D = material
@@ -2117,36 +2124,54 @@ def stiffness(p6, t6, material, qpe):
                  t6[e,3]*2, t6[e,3]*2+1,
                  t6[e,4]*2, t6[e,4]*2+1,
                  t6[e,5]*2, t6[e,5]*2+1]
+        
+        index_f = t6[e,:]
         if np.sum(e == CQPE) == 0:
             xis = poi3[:,0]
             eta = poi3[:,1]
             N, dNdx, dNdy, detJac = T6element(X, Y, xis, eta)
             Ke = np.zeros((edof,edof))
+            Qe = np.zeros((edof,edof_f))
             for i in range(poi3.shape[0]):
                 B = np.zeros((3,edof))
                 B[0,:] = [dNdx[i,0], 0, dNdx[i,1], 0, dNdx[i,2], 0, dNdx[i,3], 0, dNdx[i,4], 0, dNdx[i,5], 0]
                 B[1,:] = [0, dNdy[i,0], 0, dNdy[i,1], 0, dNdy[i,2], 0, dNdy[i,3], 0, dNdy[i,4], 0, dNdy[i,5]]
                 B[2,:] = [dNdy[i,0], dNdx[i,0], dNdy[i,1], dNdx[i,1], dNdy[i,2], dNdx[i,2], dNdy[i,3], dNdx[i,3], dNdy[i,4], dNdx[i,4], dNdy[i,5], dNdx[i,5]]     
-                Ke = Ke + np.dot(np.dot(np.transpose(B),D),B)*detJac[i]*wei3[i]    
+                
+                NN = np.zeros((1,6))
+                NN[0,:] = N[i,:]
+                Ke = Ke + np.dot(np.dot(np.transpose(B),D),B)*detJac[i]*wei3[i]  
+                Qe = Qe + np.dot(np.dot(np.transpose(B),m),NN)*detJac[i]*wei3[i]  
         else:
             Ke = np.zeros((edof,edof))
             xis = poi4[:,0]
             eta = poi4[:,1]
             N, dNdx, dNdy, detJac = Q8element(X, Y, xis, eta)
             Ke = np.zeros((edof,edof))
-            
+            Qe = np.zeros((edof,edof_f))
             for i in range(poi4.shape[0]):
                 B = np.zeros((3,edof))
                 B[0,:] = [dNdx[i,0] + dNdx[i,6] + dNdx[i,7], 0, dNdx[i,1], 0, dNdx[i,2], 0, dNdx[i,3], 0, dNdx[i,4], 0, dNdx[i,5], 0]
                 B[1,:] = [0, dNdy[i,0] + dNdy[i,6] + dNdy[i,7], 0, dNdy[i,1], 0, dNdy[i,2], 0, dNdy[i,3], 0, dNdy[i,4], 0, dNdy[i,5]]
                 B[2,:] = [dNdy[i,0] + dNdy[i,6] + dNdy[i,7], dNdx[i,0] + dNdx[i,6] + dNdx[i,7], dNdy[i,1], dNdx[i,1], dNdy[i,2], dNdx[i,2], dNdy[i,3], dNdx[i,3], dNdy[i,4], dNdx[i,4], dNdy[i,5], dNdx[i,5]]     
+                
+                
+                NN = np.zeros((1,6))
+                NN[0,0] = N[i,0] + N[i,6] + N[i,7]
+                NN[0,1::] = N[i,1:6]
                 Ke = Ke + np.dot(np.dot(np.transpose(B),D),B)*detJac[i]*wei4[i]  
+                # Qe = Qe + np.dot(np.dot(np.transpose(B),m),NN)*detJac[i]*wei4[i]  
         for j in range(edof):
             for i in range(edof):
                 kj = index[j]
                 ki = index[i]
                 K[ki,kj] = K[ki,kj] + Ke[i,j]
-    return K
+        for j in range(edof):
+            for i in range(edof_f):
+                kj = index[j]
+                kf = index_f[i]
+                Q[kj,kf] = Q[kj,kf] + Qe[j,i]
+    return K, Q
 def loadsegment(p6, NeuDof = None, NeuVal = None):
     sdof = p6.shape[0]*2
     F = np.zeros((sdof,1))

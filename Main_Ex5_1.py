@@ -78,7 +78,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         self.glosif = []
         
         self.PROPAGATION = False
-        self.MULTI_SCALE = True
+        self.MULTI_SCALE = False
         self.QPE = True
         
 
@@ -491,7 +491,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         
         # starttime = time.time()
         if self.MULTI_SCALE:
-            keq, ki, newfrac, tips0 = self.propagation_small_scale( tips, disp_cells, self.QPE )
+            keq, ki, newfrac, tips0 = self.propagation_small_scale( tips, disp_cells, pres_cells, self.QPE )
         else:       
             pref, tref = analysis.refinement( pmod, tmod, self.p, self.t, self.fracture, tips_actualy, self.min_cell, self.min_face, self.GAP)
             # sol1 = analysis.NN_recovery( disp_cells, self.p, self.t)                    
@@ -501,7 +501,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
             
             keq, ki, newfrac, tips0, p6, t6, disp6 = analysis.evaluate_propagation(self.material, pref, tref, self.p, self.t, 
                                                                                    self.initial_fracture, self.fracture, tips_actualy, 
-                                                                                   self.min_face, disp_cells, self.GAP, self.QPE)
+                                                                                   self.min_face, disp_cells, pres_cells, self.GAP, self.QPE)
         # endtime = time.time()   
         # print('computational time', endtime - starttime)
 
@@ -654,7 +654,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         
         
         return
-    def propagation_small_scale(self, tips, disp_cells, QPE):     
+    def propagation_small_scale(self, tips, disp_cells, pres_cells, QPE):     
         material_micro = dict([('YOUNG', self.material['YOUNG']*(1 - self.POROSITY)), 
                                ('POISSON', self.material['POISSON']), 
                                ('KIC', self.material['KIC']) ])  
@@ -745,17 +745,21 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
                     p_small, t_small = p0, t0
                     
                     sol1 = analysis.NN_recovery( disp_cells, self.p, self.t)                    
-                    sol2 = analysis.linear_interpolation(self.p,self.t, sol1, p_small)
+                    dispnod = analysis.linear_interpolation(self.p,self.t, sol1, p_small)
+                    
+                    sol2 = analysis.NN_recovery( pres_cells, self.p, self.t)                    
+                    presnod = analysis.linear_interpolation(self.p,self.t, sol2, p_small)
+                    
                     # analysis.trisurf(p_small + 5e2*sol2, t_small, value = sol2[:,0].reshape(p_small.shape[0],1))
                     # valnod = inter.griddata(self.pc, disp_cells, p_small, method = 'cubic')
                     # valnod[frac_nod,:] = sol2[frac_nod,:]
                     
-                    valnod = sol2
+                  
 
                     # p_small, t_small = analysis.adjustmesh(g2d_small, tips_small, 1E-3)  
     
                     Gi, sifi, keqi, craangi, iniangi = analysis.evaluate_propagation_small(self.material, p_small, t_small, frac_small, tipi, 
-                                                                                       self.p, self.t, valnod, self.initial_fracture, self.min_face, 1E-3, QPE)
+                                                                                       self.p, self.t, dispnod, presnod, self.initial_fracture, self.min_face, 1E-3, QPE)
                     G = np.append(G, Gi); 
                     keq = np.append(keq, keqi); 
                     ki.append(sifi[0]); 
@@ -999,7 +1003,7 @@ while setup.time <= setup.end_time and np.sum(setup.lenfra) <= 0.25:
 # end = time.time()
 # print(end - start)    
 kk = k -1
-# kk = 23
+# kk = 0
 trac = setup.traction
 p = setup.nodcoo[kk]
 t = setup.celind[kk]
@@ -1008,7 +1012,7 @@ disp_nodes =  analysis.NN_recovery( setup.stored_disp[kk], p, t)
 pres_nodes =  analysis.NN_recovery( setup.stored_pres[kk], p, t)
 # frac = np.concatenate((setup.farcoo[k][0], setup.farcoo[k][1]), axis = 0)
 frac = setup.farcoo[kk][0]
-analysis.trisurf( p + disp_nodes*1e3, t, fn = None, point = None, value = setup.stored_pres[kk]*1e-6, vmin = 6.5, vmax = 13)
+analysis.trisurf( p + disp_nodes*1e3, t, fn = None, point = None, value = setup.stored_pres[kk]*1e-6)
 
 disp = np.sqrt( setup.stored_disp[kk][:,0]**2 +  setup.stored_disp[kk][:,1]**2)
 # disp = setup.stored_disp[k][:,1]

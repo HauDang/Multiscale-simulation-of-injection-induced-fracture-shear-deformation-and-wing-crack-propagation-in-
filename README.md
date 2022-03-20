@@ -1,4 +1,4 @@
-# Multiscale simulation of injection-induced fracture shear-deformation and wing-crack propagation in poroelastic media
+# Simulation of injection induced fracture mechanics with runscripts
 
 Highlights:
 1. Multiscale simulation of fracture slip and propagation caused by fluid injection in poroelastic, fractured media.

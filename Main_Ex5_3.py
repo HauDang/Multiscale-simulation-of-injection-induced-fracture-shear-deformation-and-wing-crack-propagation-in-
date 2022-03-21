@@ -136,7 +136,7 @@ class ModelSetup(pp.ContactMechanicsBiot, pp.ConformingFracturePropagation):
         if g.dim == 2:
             return self.POROSITY
         else:
-            return 0.1
+            return 1
     def biot_alpha(self, g) -> np.ndarray:
         if g.dim == 2:
             return self.BIOT

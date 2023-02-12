@@ -3,7 +3,8 @@
 This code implements examples of the published paper:
 
 H Dang-Trung, I Berre, E Keilegavlen. Two-level simulation of injection-induced fracture slip and wing-crack propagation in poroelastic media. International Journal of Rock Mechanics and Mining Sciences 160, 105248
-
+This project has received funding from the European Research Council (ERC) under the European Union’s Horizon 2020 research and
+innovation programme (grant agreement No 101002507)
 
 Highlights:
 1. Multiscale simulation of fracture slip and propagation caused by fluid injection in poroelastic, fractured media.
